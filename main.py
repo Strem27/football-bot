@@ -1,15 +1,14 @@
 import os
 import requests
-from flask import Flask
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Recuperamos las credenciales guardadas en las Variables de Entorno de Render
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
 def enviar_telegram(mensaje):
-    """Función para enviar alertas a tu Telegram"""
+    """Envía mensajes a tu Telegram mediante la API oficial"""
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Faltan las credenciales de Telegram en Render.")
         return False
@@ -28,24 +27,34 @@ def enviar_telegram(mensaje):
         print(f"Error enviando mensaje a Telegram: {e}")
         return False
 
-def motor_analisis_v24(partido_info):
-    """Motor matemático basado en Metaprompt v24.0"""
-    pe = partido_info["promedio_a"] + partido_info["promedio_b"]
-    tipo_mercado = partido_info["tipo_mercado"]
-    linea_casa = partido_info["linea_casa"]
-    cuota = partido_info["cuota"]
+def motor_analisis_v24(partido):
+    """
+    Motor analítico con Metaprompt v24.0
+    Filtros: MS >= 2.0 | Cuota >= 1.50
+    """
+    try:
+        prom_a = float(partido["promedio_a"])
+        prom_b = float(partido["promedio_b"])
+        linea_casa = float(partido["linea_casa"])
+        cuota = float(partido["cuota"])
+        tipo_mercado = partido.get("tipo_mercado", "Over")
+        mercado_nombre = partido.get("mercado_nombre", "Córners")
+    except (KeyError, ValueError):
+        return None
 
-    # Cálculo del Margen de Seguridad (MS)
+    pe = prom_a + prom_b
+
+    # Cálculo del Margen de Seguridad
     if tipo_mercado == "Over":
         ms = pe - linea_casa
     else:
         ms = linea_casa - pe
 
-    # Regla estricta: Margen mínimo 2.0 y cuota >= 1.50
+    # Regla estricta NO-GO
     if ms < 2.0 or cuota < 1.50:
         return None
 
-    # Clasificación de Apuesta
+    # Clasificación del Stake
     if ms >= 3.0:
         veredicto = "🟢 APUESTA FUERTE (GO)"
         stake = "2.0% de la Banca"
@@ -55,36 +64,40 @@ def motor_analisis_v24(partido_info):
 
     alerta = (
         f"🚨 <b>¡OPORTUNIDAD DETECTADA (+EV)!</b> 🚨\n\n"
-        f"⚽ <b>Partido:</b> {partido_info['equipo_a']} vs {partido_info['equipo_b']}\n"
-        f"📊 <b>Mercado:</b> {tipo_mercado} {linea_casa}\n"
-        f"📈 <b>PE Esperado:</b> {pe} | <b>Margen (MS):</b> +{round(ms, 2)}\n"
+        f"⚽ <b>Partido:</b> {partido['equipo_a']} vs {partido['equipo_b']}\n"
+        f"📌 <b>Mercado:</b> {mercado_nombre} ({tipo_mercado} {linea_casa})\n"
+        f"📈 <b>PE Esperado:</b> {round(pe, 2)} | <b>Margen (MS):</b> +{round(ms, 2)}\n"
         f"💰 <b>Cuota:</b> {cuota} | <b>Stake:</b> {stake}\n"
-        f"📌 <b>Veredicto:</b> {veredicto}"
+        f"📊 <b>Veredicto:</b> {veredicto}"
     )
     return alerta
 
 @app.route("/")
 def home():
-    return "Football Analytics Bot (Supremacy CORE ∞) is active and monitoring."
+    return "Football Analytics Bot (Supremacy CORE ∞) está activo y monitoreando."
 
-@app.route("/probar-analisis")
-def probar_analisis():
-    partido_prueba = {
-        "equipo_a": "Real Madrid", "equipo_b": "Barcelona",
-        "promedio_a": 7.2, "promedio_b": 5.8,
-        "tipo_mercado": "Over", "linea_casa": 9.5, "cuota": 1.75
-    }
+@app.route("/analizar-lote", methods=["POST"])
+def analizar_lote():
+    """Ruta para recibir y evaluar listas completas de partidos reales"""
+    datos = request.get_json()
     
-    alerta = motor_analisis_v24(partido_prueba)
-    
-    if alerta:
-        exito = enviar_telegram(alerta)
-        if exito:
-            return "✅ ¡Alerta procesada y enviada a Telegram con éxito!"
-        else:
-            return "⚠️ El análisis dio GO, pero falló el envío a Telegram. Revisa las variables TOKEN y CHAT_ID en Render."
-    else:
-        return "El partido analizado dio NO-GO (Filtros estrictos aplicados correctamente)."
+    if not datos or "partidos" not in datos:
+        return jsonify({"error": "Formato JSON inválido. Se requiere la clave 'partidos'."}), 400
+
+    partidos = datos["partidos"]
+    oportunidades_encontradas = 0
+
+    for partido in partidos:
+        alerta = motor_analisis_v24(partido)
+        if alerta:
+            enviar_telegram(alerta)
+            oportunidades_encontradas += 1
+
+    return jsonify({
+        "status": "exito",
+        "partidos_evaluados": len(partidos),
+        "oportunidades_notificadas": oportunidades_encontradas
+    })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
