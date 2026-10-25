@@ -8,54 +8,76 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
 def enviar_telegram(mensaje):
-    """Envía mensajes a tu Telegram mediante la API oficial"""
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("Faltan las credenciales de Telegram en Render.")
         return False
-        
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
         "text": mensaje,
         "parse_mode": "HTML"
     }
-    
     try:
         response = requests.post(url, json=payload)
         return response.status_code == 200
     except Exception as e:
-        print(f"Error enviando mensaje a Telegram: {e}")
+        print(f"Error enviando mensaje: {e}")
         return False
 
-def motor_analisis_v24(partido):
+def evaluar_multimercado(partido):
     """
-    Motor analítico con Metaprompt v24.0
-    Filtros: MS >= 2.0 | Cuota >= 1.50
+    Evalúa múltiples mercados para un mismo partido y selecciona 
+    automáticamente el que tenga el mayor Margen de Seguridad (+EV).
     """
     try:
-        prom_a = float(partido["promedio_a"])
-        prom_b = float(partido["promedio_b"])
-        linea_casa = float(partido["linea_casa"])
-        cuota = float(partido["cuota"])
-        tipo_mercado = partido.get("tipo_mercado", "Over")
-        mercado_nombre = partido.get("mercado_nombre", "Córners")
-    except (KeyError, ValueError):
+        equipo_a = partido["equipo_a"]
+        equipo_b = partido["equipo_b"]
+        candidatos_mercados = partido.get("mercados", [])
+    except KeyError:
         return None
 
-    pe = prom_a + prom_b
+    mejor_opcion = None
+    mayor_ms = -999.0
 
-    # Cálculo del Margen de Seguridad
-    if tipo_mercado == "Over":
-        ms = pe - linea_casa
-    else:
-        ms = linea_casa - pe
+    # Analizamos cada mercado disponible para el partido
+    for m in candidatos_mercados:
+        try:
+            prom_a = float(m["promedio_a"])
+            prom_b = float(m["promedio_b"])
+            linea_casa = float(m["linea_casa"])
+            cuota = float(m["cuota"])
+            tipo_mercado = m.get("tipo_mercado", "Over")
+            mercado_nombre = m.get("mercado_nombre", "Mercado")
+        except (KeyError, ValueError):
+            continue
 
-    # Regla estricta NO-GO
-    if ms < 2.0 or cuota < 1.50:
+        pe = prom_a + prom_b
+
+        # Cálculo del Margen de Seguridad
+        if tipo_mercado == "Over":
+            ms = pe - linea_casa
+        else:
+            ms = linea_casa - pe
+
+        # Filtro estricto: MS >= 2.0 y Cuota >= 1.50
+        if ms >= 2.0 and cuota >= 1.50:
+            # Nos quedamos con el mercado que tenga el MAYOR margen de seguridad
+            if ms > mayor_ms:
+                mayor_ms = ms
+                mejor_opcion = {
+                    "mercado_nombre": mercado_nombre,
+                    "tipo_mercado": tipo_mercado,
+                    "linea_casa": linea_casa,
+                    "pe": round(pe, 2),
+                    "ms": round(ms, 2),
+                    "cuota": cuota
+                }
+
+    # Si ningún mercado pasó el filtro estricto, no hay alerta
+    if not mejor_opcion:
         return None
 
-    # Clasificación del Stake
-    if ms >= 3.0:
+    # Definir Stake y Veredicto según el mejor MS encontrado
+    if mejor_opcion["ms"] >= 3.0:
         veredicto = "🟢 APUESTA FUERTE (GO)"
         stake = "2.0% de la Banca"
     else:
@@ -63,40 +85,38 @@ def motor_analisis_v24(partido):
         stake = "1.0% de la Banca"
 
     alerta = (
-        f"🚨 <b>¡OPORTUNIDAD DETECTADA (+EV)!</b> 🚨\n\n"
-        f"⚽ <b>Partido:</b> {partido['equipo_a']} vs {partido['equipo_b']}\n"
-        f"📌 <b>Mercado:</b> {mercado_nombre} ({tipo_mercado} {linea_casa})\n"
-        f"📈 <b>PE Esperado:</b> {round(pe, 2)} | <b>Margen (MS):</b> +{round(ms, 2)}\n"
-        f"💰 <b>Cuota:</b> {cuota} | <b>Stake:</b> {stake}\n"
+        f"🚨 <b>¡MEJOR OPCIÓN (+EV) DETECTADA!</b> 🚨\n\n"
+        f"⚽ <b>Partido:</b> {equipo_a} vs {equipo_b}\n"
+        f"🎯 <b>Selección Óptima:</b> {mejor_opcion['mercado_nombre']} ({mejor_opcion['tipo_mercado']} {mejor_opcion['linea_casa']})\n"
+        f"📈 <b>PE Esperado:</b> {mejor_opcion['pe']} | <b>Margen (MS):</b> +{mejor_opcion['ms']}\n"
+        f"💰 <b>Cuota:</b> {mejor_opcion['cuota']} | <b>Stake:</b> {stake}\n"
         f"📊 <b>Veredicto:</b> {veredicto}"
     )
     return alerta
 
 @app.route("/")
 def home():
-    return "Football Analytics Bot (Supremacy CORE ∞) está activo y monitoreando."
+    return "Multimarket Football Bot (Supremacy CORE ∞) Active."
 
 @app.route("/analizar-lote", methods=["POST"])
 def analizar_lote():
-    """Ruta para recibir y evaluar listas completas de partidos reales"""
     datos = request.get_json()
-    
     if not datos or "partidos" not in datos:
-        return jsonify({"error": "Formato JSON inválido. Se requiere la clave 'partidos'."}), 400
+        return jsonify({"error": "JSON inválido"}), 400
 
     partidos = datos["partidos"]
-    oportunidades_encontradas = 0
+    alertas_enviadas = 0
 
     for partido in partidos:
-        alerta = motor_analisis_v24(partido)
+        alerta = evaluar_multimercado(partido)
         if alerta:
             enviar_telegram(alerta)
-            oportunidades_encontradas += 1
+            alertas_enviadas += 1
 
     return jsonify({
         "status": "exito",
         "partidos_evaluados": len(partidos),
-        "oportunidades_notificadas": oportunidades_encontradas
+        "alertas_enviadas": alertas_enviadas
     })
 
 if __name__ == "__main__":
