@@ -23,10 +23,10 @@ def enviar_telegram(mensaje):
         print(f"Error enviando mensaje: {e}")
         return False
 
-def evaluar_multimercado_autonomo(partido):
+def evaluar_multimercado_normalizado(partido):
     """
-    El bot decide de forma autónoma si el mercado debe ser Over o Under 
-    según los promedios y selecciona la opción con mayor Margen de Seguridad (+EV).
+    Evalúa múltiples mercados normalizando la desviación porcentual (Eficiencia Relativa)
+    para evitar el sesgo del volumen bruto (córners vs goles/tarjetas).
     """
     try:
         equipo_a = partido["equipo_a"]
@@ -36,7 +36,7 @@ def evaluar_multimercado_autonomo(partido):
         return None
 
     mejor_opcion = None
-    mayor_ms = -999.0
+    mayor_eficiencia = -999.0
 
     for m in candidatos_mercados:
         try:
@@ -50,7 +50,7 @@ def evaluar_multimercado_autonomo(partido):
 
         pe = prom_a + prom_b
 
-        # CONDICIÓN AUTÓNOMA: El bot decide si es Over o Under
+        # Decisión autónoma Over / Under
         if pe >= linea_casa:
             tipo_mercado = "Over"
             ms = pe - linea_casa
@@ -58,16 +58,24 @@ def evaluar_multimercado_autonomo(partido):
             tipo_mercado = "Under"
             ms = linea_casa - pe
 
-        # Filtro estricto: MS >= 2.0 y Cuota >= 1.50
+        # Normalización por Eficiencia Relativa (%) para comparar peras con manzanas
+        if linea_casa > 0:
+            eficiencia_porcentual = (ms / linea_casa) * 100
+        else:
+            eficiencia_porcentual = 0.0
+
+        # Filtros estrictos de calidad: MS absoluto >= 2.0 y Cuota >= 1.50
         if ms >= 2.0 and cuota >= 1.50:
-            if ms > mayor_ms:
-                mayor_ms = ms
+            # Seleccionamos el mercado que tenga la mayor eficiencia porcentual real
+            if eficiencia_porcentual > mayor_eficiencia:
+                mayor_eficiencia = eficiencia_porcentual
                 mejor_opcion = {
                     "mercado_nombre": mercado_nombre,
                     "tipo_mercado": tipo_mercado,
                     "linea_casa": linea_casa,
                     "pe": round(pe, 2),
                     "ms": round(ms, 2),
+                    "eficiencia": round(eficiencia_porcentual, 1),
                     "cuota": cuota
                 }
 
@@ -82,10 +90,11 @@ def evaluar_multimercado_autonomo(partido):
         stake = "1.0% de la Banca"
 
     alerta = (
-        f"🚨 <b>¡OPCIÓN AUTÓNOMA (+EV) DETECTADA!</b> 🚨\n\n"
+        f"🚨 <b>¡VALOR +EV DETECTADO (NORMALIZADO)!</b> 🚨\n\n"
         f"⚽ <b>Partido:</b> {equipo_a} vs {equipo_b}\n"
         f"🎯 <b>Selección Óptima:</b> {mejor_opcion['mercado_nombre']} ({mejor_opcion['tipo_mercado']} {mejor_opcion['linea_casa']})\n"
         f"📈 <b>PE Esperado:</b> {mejor_opcion['pe']} | <b>Margen (MS):</b> +{mejor_opcion['ms']}\n"
+        f"⚖️ <b>Eficiencia Relativa:</b> +{mejor_opcion['eficiencia']}%\n"
         f"💰 <b>Cuota:</b> {mejor_opcion['cuota']} | <b>Stake:</b> {stake}\n"
         f"📊 <b>Veredicto:</b> {veredicto}"
     )
@@ -93,7 +102,7 @@ def evaluar_multimercado_autonomo(partido):
 
 @app.route("/")
 def home():
-    return "Autonomous Multimarket Football Bot Active."
+    return "Normalized Autonomous Multimarket Football Bot Active."
 
 @app.route("/analizar-lote", methods=["POST"])
 def analizar_lote():
@@ -105,7 +114,7 @@ def analizar_lote():
     alertas_enviadas = 0
 
     for partido in partidos:
-        alerta = evaluar_multimercado_autonomo(partido)
+        alerta = evaluar_multimercado_normalizado(partido)
         if alerta:
             enviar_telegram(alerta)
             alertas_enviadas += 1
