@@ -23,10 +23,10 @@ def enviar_telegram(mensaje):
         print(f"Error enviando mensaje: {e}")
         return False
 
-def evaluar_multimercado(partido):
+def evaluar_multimercado_autonomo(partido):
     """
-    Evalúa múltiples mercados para un mismo partido y selecciona 
-    automáticamente el que tenga el mayor Margen de Seguridad (+EV).
+    El bot decide de forma autónoma si el mercado debe ser Over o Under 
+    según los promedios y selecciona la opción con mayor Margen de Seguridad (+EV).
     """
     try:
         equipo_a = partido["equipo_a"]
@@ -38,29 +38,28 @@ def evaluar_multimercado(partido):
     mejor_opcion = None
     mayor_ms = -999.0
 
-    # Analizamos cada mercado disponible para el partido
     for m in candidatos_mercados:
         try:
             prom_a = float(m["promedio_a"])
             prom_b = float(m["promedio_b"])
             linea_casa = float(m["linea_casa"])
             cuota = float(m["cuota"])
-            tipo_mercado = m.get("tipo_mercado", "Over")
             mercado_nombre = m.get("mercado_nombre", "Mercado")
         except (KeyError, ValueError):
             continue
 
         pe = prom_a + prom_b
 
-        # Cálculo del Margen de Seguridad
-        if tipo_mercado == "Over":
+        # CONDICIÓN AUTÓNOMA: El bot decide si es Over o Under
+        if pe >= linea_casa:
+            tipo_mercado = "Over"
             ms = pe - linea_casa
         else:
+            tipo_mercado = "Under"
             ms = linea_casa - pe
 
         # Filtro estricto: MS >= 2.0 y Cuota >= 1.50
         if ms >= 2.0 and cuota >= 1.50:
-            # Nos quedamos con el mercado que tenga el MAYOR margen de seguridad
             if ms > mayor_ms:
                 mayor_ms = ms
                 mejor_opcion = {
@@ -72,11 +71,9 @@ def evaluar_multimercado(partido):
                     "cuota": cuota
                 }
 
-    # Si ningún mercado pasó el filtro estricto, no hay alerta
     if not mejor_opcion:
         return None
 
-    # Definir Stake y Veredicto según el mejor MS encontrado
     if mejor_opcion["ms"] >= 3.0:
         veredicto = "🟢 APUESTA FUERTE (GO)"
         stake = "2.0% de la Banca"
@@ -85,7 +82,7 @@ def evaluar_multimercado(partido):
         stake = "1.0% de la Banca"
 
     alerta = (
-        f"🚨 <b>¡MEJOR OPCIÓN (+EV) DETECTADA!</b> 🚨\n\n"
+        f"🚨 <b>¡OPCIÓN AUTÓNOMA (+EV) DETECTADA!</b> 🚨\n\n"
         f"⚽ <b>Partido:</b> {equipo_a} vs {equipo_b}\n"
         f"🎯 <b>Selección Óptima:</b> {mejor_opcion['mercado_nombre']} ({mejor_opcion['tipo_mercado']} {mejor_opcion['linea_casa']})\n"
         f"📈 <b>PE Esperado:</b> {mejor_opcion['pe']} | <b>Margen (MS):</b> +{mejor_opcion['ms']}\n"
@@ -96,7 +93,7 @@ def evaluar_multimercado(partido):
 
 @app.route("/")
 def home():
-    return "Multimarket Football Bot (Supremacy CORE ∞) Active."
+    return "Autonomous Multimarket Football Bot Active."
 
 @app.route("/analizar-lote", methods=["POST"])
 def analizar_lote():
@@ -108,7 +105,7 @@ def analizar_lote():
     alertas_enviadas = 0
 
     for partido in partidos:
-        alerta = evaluar_multimercado(partido)
+        alerta = evaluar_multimercado_autonomo(partido)
         if alerta:
             enviar_telegram(alerta)
             alertas_enviadas += 1
