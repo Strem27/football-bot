@@ -64,8 +64,8 @@ def evaluar_multimercado_normalizado(partido):
         else:
             eficiencia_porcentual = 0.0
 
-        # Filtros estrictos de calidad: MS absoluto >= 2.0 y Cuota >= 1.50
-        if ms >= 2.0 and cuota >= 1.50:
+        # Filtros calibrados: Eficiencia Relativa >= 15.0% y Cuota >= 1.50
+        if eficiencia_porcentual >= 15.0 and cuota >= 1.50:
             # Seleccionamos el mercado que tenga la mayor eficiencia porcentual real
             if eficiencia_porcentual > mayor_eficiencia:
                 mayor_eficiencia = eficiencia_porcentual
@@ -82,7 +82,7 @@ def evaluar_multimercado_normalizado(partido):
     if not mejor_opcion:
         return None
 
-    if mejor_opcion["ms"] >= 3.0:
+    if mejor_opcion["eficiencia"] >= 30.0:
         veredicto = "🟢 APUESTA FUERTE (GO)"
         stake = "2.0% de la Banca"
     else:
