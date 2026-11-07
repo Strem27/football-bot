@@ -55,10 +55,7 @@ def consultar_partidos_hoy():
         return []
 
 def consultar_cuotas_odds_api():
-    """
-    Consulta las cuotas en vivo desde The Odds API para las principales ligas de fútbol europeo.
-    (Utiliza el deporte soccer_epl como referencia principal de endpoint, adaptable a otras ligas).
-    """
+    """Consulta las cuotas en vivo desde The Odds API para la Premier League como referencia."""
     url = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds/"
     params = {
         "apiKey": ODDS_API_KEY,
@@ -91,21 +88,16 @@ def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
     return max(0.0, kelly_fraccional * 100)
 
 def evaluar_partido_con_cuotas_reales(partido, cuotas_mercado):
-    """
-    Cruza el partido del día con las cuotas reales obtenidas de The Odds API,
-    simula la probabilidad del modelo cuantitativo y extrae el mejor mercado +EV.
-    """
+    """Cruza el partido del día con las cuotas reales y extrae el mejor mercado +EV."""
     local = partido['homeTeam']['name']
     visitante = partido['awayTeam']['name']
     
-    # Buscamos si el partido coincide en The Odds API (coincidencia parcial de nombres)
     cuotas_encontradas = None
     for evento in cuotas_mercado:
         if local.lower() in evento.get('home_team', '').lower() or visitante.lower() in evento.get('away_team', '').lower():
             cuotas_encontradas = evento.get('bookmakers', [])
             break
             
-    # Extraer cuotas reales de las casas si existen, o usar base de mercado
     cuota_local = 1.95
     cuota_empate = 3.40
     cuota_visita = 3.80
@@ -113,7 +105,6 @@ def evaluar_partido_con_cuotas_reales(partido, cuotas_mercado):
     
     if cuotas_encontradas:
         try:
-            # Tomamos las cuotas de la primera casa de apuestas disponible en el JSON
             markets = cuotas_encontradas[0].get('markets', [])
             for m in markets:
                 if m['key'] == 'h2h':
@@ -129,9 +120,8 @@ def evaluar_partido_con_cuotas_reales(partido, cuotas_mercado):
                         if outcome['name'].lower() == 'over':
                             cuota_over25 = outcome['price']
         except Exception as e:
-            print(f"Error parseando cuotas de The Odds API para {local} vs {visitante}: {e}")
+            print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
-    # Catálogo multimercado evaluado con el modelo cuantitativo
     opciones = [
         {"mercado": "1X2 (Gana Local)", "prob": 0.54, "cuota": cuota_local},
         {"mercado": "1X2 (Empate)", "prob": 0.26, "cuota": cuota_empate},
@@ -182,5 +172,20 @@ def main():
                 f"🎯 <b>Selección Óptima:</b> {seleccion['mercado']}\n"
                 f"📊 <b>Prob. Modelo:</b> <code>{seleccion['prob']*100:.1f}%</code> | <b>+EV:</b> <code>+{seleccion['ev']:.1f}%</code>\n"
                 f"💰 <b>Cuota Real:</b> <code>{seleccion['cuota']}</code>\n"
-                f"🛡️ 
-                
+                f"🛡️ <b>Stake Kelly (0.25):</b> <b>{seleccion['stake_k']:.2f}% de la Banca</b>\n\n"
+                f"-----------------------------------\n\n"
+            )
+            apuestas_encontradas.append(apuesta_texto)
+
+    hoy_str = datetime.now().strftime('%Y-%m-%d')
+    if apuestas_encontradas:
+        mensaje_final = f"🤖 <b>REPORTE QUANT EN VIVO ({hoy_str})</b> 🤖\n\n" + "".join(apuestas_encontradas)
+    else:
+        mensaje_final = f"🤖 <b>Bot Quant Activo</b> ({hoy_str}): Escaneo con cuotas en vivo completado. Sin cruces con valor positivo bajo Kelly estricto en este ciclo."
+
+    enviar_telegram(mensaje_final)
+    print("¡Proceso finalizado y enviado a Telegram!")
+
+if __name__ == "__main__":
+    main()
+    
