@@ -9,7 +9,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 def enviar_telegram(mensaje):
-    """Envía la alerta formateada al chat de Telegram."""
+    """Envía la alerta formateada al chat de Telegram usando texto plano si falla el HTML."""
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Error: Faltan las credenciales de Telegram en los Secrets.")
         return False
@@ -22,7 +22,7 @@ def enviar_telegram(mensaje):
     }
     try:
         response = requests.post(url, json=payload)
-        print(f"Respuesta de Telegram: {response.status_code}")
+        print(f"Respuesta de Telegram: {response.status_code} - {response.text}")
         return response.status_code == 200
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}")
@@ -31,12 +31,11 @@ def enviar_telegram(mensaje):
 def consultar_partidos_hoy():
     """Consulta partidos programados ampliando el rango al fin de semana completo."""
     hoy = datetime.now().strftime('%Y-%m-%d')
-    mañana = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    mañana = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
     
     url = "https://api.football-data.org/v4/matches"
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-    # Incluimos las ligas principales europeas
-    competencias = "PL,PD,SA,BL1,FL1,CLI"
+    competencias = "PL,PD,SA,BL1,FL1"
     
     params = {
         "dateFrom": hoy,
@@ -100,8 +99,8 @@ def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
 
 def evaluar_partido_flexible(partido, cuotas_mercado):
     """Evalúa el partido con sensibilidad flexible y cuotas reales."""
-    local = partido['homeTeam']['name']
-    visitante = partido['awayTeam']['name']
+    local = partido.get('homeTeam', {}).get('name', 'Local')
+    visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
     
     cuotas_encontradas = None
     for evento in cuotas_mercado:
@@ -134,18 +133,18 @@ def evaluar_partido_flexible(partido, cuotas_mercado):
             print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
     opciones = [
-        {"mercado": "1X2 (Gana Local)", "prob": 0.52, "cuota": cuota_local},
-        {"mercado": "1X2 (Empate)", "prob": 0.28, "cuota": cuota_empate},
-        {"mercado": "1X2 (Gana Visitante)", "prob": 0.25, "cuota": cuota_visita},
-        {"mercado": "Goles Totales (Over 2.5)", "prob": 0.58, "cuota": cuota_over25},
-        {"mercado": "Ambos Anotan (Sí - BTTS)", "prob": 0.55, "cuota": 1.78}
+        {"mercado": "1X2 Gana Local", "prob": 0.52, "cuota": cuota_local},
+        {"mercado": "1X2 Empate", "prob": 0.28, "cuota": cuota_empate},
+        {"mercado": "1X2 Gana Visitante", "prob": 0.25, "cuota": cuota_visita},
+        {"mercado": "Goles Totales Over 2.5", "prob": 0.58, "cuota": cuota_over25},
+        {"mercado": "Ambos Anotan BTTS", "prob": 0.55, "cuota": 1.78}
     ]
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
-        if ev > -0.01 and stake_k > 0.01:
+        if ev > -0.05 and stake_k > 0.01:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -169,30 +168,30 @@ def main():
     apuestas_encontradas = []
     
     for partido in partidos:
-        local = partido['homeTeam']['name']
-        visitante = partido['awayTeam']['name']
-        competencia = partido['competition']['name']
+        local = partido.get('homeTeam', {}).get('name', 'Local')
+        visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
+        competencia = partido.get('competition', {}).get('name', 'Liga Europea')
         
         seleccion = evaluar_partido_flexible(partido, cuotas_api)
         
         if seleccion:
             apuesta_texto = (
-                f"🚨 <b>¡OPORTUNIDAD QUANT DETECTADA!</b> 🚨\n\n"
-                f"🏆 <b>Liga:</b> {competencia}\n"
-                f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
-                f"🎯 <b>Selección:</b> {seleccion['mercado']}\n"
-                f"📊 <b>Prob. Modelo:</b> <code>{seleccion['prob']*100:.1f}%</code> | <b>EV:</b> <code>{seleccion['ev']:+.1f}%</code>\n"
-                f"💰 <b>Cuota:</b> <code>{seleccion['cuota']}</code>\n"
-                f"🛡️ <b>Stake Kelly (0.25):</b> <b>{seleccion['stake_k']:.2f}% de la Banca</b>\n\n"
+                f"OPORTUNIDAD QUANT DETECTADA\n"
+                f"Liga: {competencia}\n"
+                f"Partido: {local} vs {visitante}\n"
+                f"Seleccion: {seleccion['mercado']}\n"
+                f"Prob: {seleccion['prob']*100:.1f}% | EV: {seleccion['ev']:+.1f}%\n"
+                f"Cuota: {seleccion['cuota']}\n"
+                f"Stake Kelly (0.25): {seleccion['stake_k']:.2f}% de la Banca\n"
                 f"-----------------------------------\n\n"
             )
             apuestas_encontradas.append(apuesta_texto)
 
     hoy_str = datetime.now().strftime('%Y-%m-%d')
     if apuestas_encontradas:
-        mensaje_final = f"🤖 <b>REPORTE QUANT FIN DE SEMANA ({hoy_str})</b> 🤖\n\n" + "".join(apuestas_encontradas)
+        mensaje_final = f"REPORTE QUANT FIN DE SEMANA ({hoy_str})\n\n" + "".join(apuestas_encontradas)
     else:
-        mensaje_final = f"🤖 <b>Bot Quant Activo</b> ({hoy_str}): Escaneo ampliado finalizado. Sin cruces con cuotas activas en el rango actual."
+        mensaje_final = f"Bot Quant Activo ({hoy_str}): Escaneo ampliado finalizado. Se analizaron {len(partidos)} partidos pero sin cruces bajo los umbrales configurados."
 
     enviar_telegram(mensaje_final)
     print("¡Proceso finalizado y enviado al canal!")
