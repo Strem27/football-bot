@@ -2,14 +2,16 @@ import os
 import requests
 from rapidfuzz import process, fuzz
 
-# --- CONFIGURACIÓN DE TOKENS (Desde la nube de GitHub) ---
+# --- CONFIGURACIÓN DE TOKENS ---
 FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 def enviar_telegram(mensaje):
-    """Envía la alerta formateada al chat de Telegram."""
+    print(f"DEBUG - TELEGRAM_TOKEN presente: {bool(TELEGRAM_TOKEN)}")
+    print(f"DEBUG - CHAT_ID presente: {bool(CHAT_ID)}")
+    
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Error: Faltan las credenciales de Telegram en los Secrets.")
         return False
@@ -30,10 +32,7 @@ def enviar_telegram(mensaje):
 
 def main():
     print("Iniciando análisis diario de partidos en la nube...")
-    
-    # Mensaje de prueba obligatorio para verificar la conexión
-    enviar_telegram("🤖 <b>Bot Quant Activo</b>: ¡Prueba de conexión exitosa desde GitHub Actions!")
-    
+    enviar_telegram("🤖 <b>Bot Quant Activo</b>: ¡Prueba de conexión exitosa!")
     print("¡Proceso finalizado con éxito!")
 
 if __name__ == "__main__":
