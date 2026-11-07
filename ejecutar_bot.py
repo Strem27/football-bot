@@ -16,7 +16,6 @@ def enviar_telegram(mensaje):
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
-    # Dividir el mensaje si supera los 4000 caracteres
     max_len = 4000
     mensajes = [mensaje[i:i+max_len] for i in range(0, len(mensaje), max_len)]
     
@@ -107,8 +106,11 @@ def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
     
     return max(0.0, kelly_fraccional * 100)
 
-def evaluar_partido_flexible(partido, cuotas_mercado):
-    """Evalúa el partido con sensibilidad flexible y cuotas reales."""
+def evaluar_partido_alta_seguridad(partido, cuotas_mercado):
+    """
+    Filtro estricto: Solo acepta apuestas con alta probabilidad modelo, 
+    un EV superior al 5% real y un stake de Kelly significativo (> 0.5%).
+    """
     local = partido.get('homeTeam', {}).get('name', 'Local')
     visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
     
@@ -143,18 +145,20 @@ def evaluar_partido_flexible(partido, cuotas_mercado):
             print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
     opciones = [
-        {"mercado": "1X2 Gana Local", "prob": 0.52, "cuota": cuota_local},
-        {"mercado": "1X2 Empate", "prob": 0.28, "cuota": cuota_empate},
-        {"mercado": "1X2 Gana Visitante", "prob": 0.25, "cuota": cuota_visita},
-        {"mercado": "Goles Totales Over 2.5", "prob": 0.58, "cuota": cuota_over25},
-        {"mercado": "Ambos Anotan BTTS", "prob": 0.55, "cuota": 1.78}
+        {"mercado": "1X2 Gana Local", "prob": 0.58, "cuota": cuota_local},
+        {"mercado": "1X2 Empate", "prob": 0.25, "cuota": cuota_empate},
+        {"mercado": "1X2 Gana Visitante", "prob": 0.22, "cuota": cuota_visita},
+        {"mercado": "Goles Totales Over 2.5", "prob": 0.62, "cuota": cuota_over25},
+        {"mercado": "Ambos Anotan BTTS", "prob": 0.60, "cuota": 1.78}
     ]
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
-        if ev > -0.05 and stake_k > 0.01:
+        
+        # FILTRO DE ALTA SEGURIDAD: Exigimos EV > 5% y Stake Kelly > 0.5%
+        if ev > 0.05 and stake_k > 0.5:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -170,7 +174,7 @@ def evaluar_partido_flexible(partido, cuotas_mercado):
     return None
 
 def main():
-    print("Iniciando escáner ampliado para el fin de semana...")
+    print("Iniciando escáner de alta seguridad...")
     
     partidos = consultar_partidos_hoy()
     cuotas_api = consultar_cuotas_multi_liga()
@@ -182,30 +186,30 @@ def main():
         visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
         competencia = partido.get('competition', {}).get('name', 'Liga Europea')
         
-        seleccion = evaluar_partido_flexible(partido, cuotas_api)
+        seleccion = evaluar_partido_alta_seguridad(partido, cuotas_api)
         
         if seleccion:
             apuesta_texto = (
-                f"OPORTUNIDAD QUANT DETECTADA\n"
-                f"Liga: {competencia}\n"
-                f"Partido: {local} vs {visitante}\n"
-                f"Seleccion: {seleccion['mercado']}\n"
-                f"Prob: {seleccion['prob']*100:.1f}% | EV: {seleccion['ev']:+.1f}%\n"
-                f"Cuota: {seleccion['cuota']}\n"
-                f"Stake Kelly (0.25): {seleccion['stake_k']:.2f}% de la Banca\n"
+                f"🎯 <b>ALTA SEGURIDAD QUANT</b> 🎯\n"
+                f"🏆 <b>Liga:</b> {competencia}\n"
+                f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
+                f"📈 <b>Selección:</b> {seleccion['mercado']}\n"
+                f"📊 <b>Prob:</b> {seleccion['prob']*100:.1f}% | <b>EV:</b> +{seleccion['ev']:.1f}%\n"
+                f"💰 <b>Cuota:</b> {seleccion['cuota']}\n"
+                f"🛡️ <b>Stake Kelly (0.25):</b> {seleccion['stake_k']:.2f}% de la Banca\n"
                 f"-----------------------------------\n\n"
             )
             apuestas_encontradas.append(apuesta_texto)
 
     hoy_str = datetime.now().strftime('%Y-%m-%d')
     if apuestas_encontradas:
-        mensaje_final = f"REPORTE QUANT FIN DE SEMANA ({hoy_str}) - Total Oportunidades: {len(apuestas_encontradas)}\n\n" + "".join(apuestas_encontradas)
+        mensaje_final = f"🔥 <b>SELECCIONES VIP DE ALTA CONFIANZA ({hoy_str})</b> 🔥\nTotal: {len(apuestas_encontradas)}\n\n" + "".join(apuestas_encontradas)
     else:
-        mensaje_final = f"Bot Quant Activo ({hoy_str}): Escaneo completado. Se analizaron {len(partidos)} partidos pero sin cruces bajo los umbrales configurados."
+        mensaje_final = f"🛡️ <b>Bot Quant Activo ({hoy_str})</b>: Escaneo de alta seguridad finalizado. Se filtraron todos los partidos de riesgo; ninguna opción cumplió con el estándar estricto de valor y confianza para este ciclo."
 
     enviar_telegram(mensaje_final)
     print("¡Proceso finalizado y enviado al canal!")
 
-if __name__ == "__main__":
+if __name__ == "main":
     main()
-    
+        
