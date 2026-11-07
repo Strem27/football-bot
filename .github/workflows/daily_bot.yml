@@ -19,7 +19,7 @@ jobs:
 
       - name: Instalar Dependencias
         run: |
-          pip install requests rapidfuzz
+          pip install requests rapidfuzz flask
 
       - name: Ejecutar Bot
         env:
