@@ -1,6 +1,6 @@
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- CONFIGURACIÓN DE TOKENS (Desde la nube de GitHub) ---
 FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_KEY")
@@ -29,15 +29,18 @@ def enviar_telegram(mensaje):
         return False
 
 def consultar_partidos_hoy():
-    """Consulta partidos programados en las principales ligas de Football-Data."""
+    """Consulta partidos programados ampliando el rango al fin de semana completo."""
     hoy = datetime.now().strftime('%Y-%m-%d')
+    mañana = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    
     url = "https://api.football-data.org/v4/matches"
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-    competencias = "PL,CL,PD,SA,BL1,FL1,DED,PPL"
+    # Incluimos las ligas principales europeas
+    competencias = "PL,PD,SA,BL1,FL1,CLI"
     
     params = {
         "dateFrom": hoy,
-        "dateTo": hoy,
+        "dateTo": mañana,
         "competitions": competencias
     }
     
@@ -45,7 +48,7 @@ def consultar_partidos_hoy():
         response = requests.get(url, headers=headers, params=params)
         if response.status_code == 200:
             matches = response.json().get("matches", [])
-            print(f"Partidos encontrados en Football-Data para hoy: {len(matches)}")
+            print(f"Partidos encontrados en Football-Data: {len(matches)}")
             return matches
         else:
             print(f"Error Football-Data: {response.status_code} - {response.text}")
@@ -56,7 +59,13 @@ def consultar_partidos_hoy():
 
 def consultar_cuotas_multi_liga():
     """Consulta cuotas en vivo de múltiples ligas europeas en The Odds API."""
-    deportes = ["soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a", "soccer_germany_bundesliga", "soccer_france_ligue_one"]
+    deportes = [
+        "soccer_epl", 
+        "soccer_spain_la_liga", 
+        "soccer_italy_serie_a", 
+        "soccer_germany_bundesliga", 
+        "soccer_france_ligue_one"
+    ]
     eventos_totales = []
     
     for deporte in deportes:
@@ -90,7 +99,7 @@ def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
     return max(0.0, kelly_fraccional * 100)
 
 def evaluar_partido_flexible(partido, cuotas_mercado):
-    """Evalúa el partido con un umbral de sensibilidad optimizado y cuotas reales."""
+    """Evalúa el partido con sensibilidad flexible y cuotas reales."""
     local = partido['homeTeam']['name']
     visitante = partido['awayTeam']['name']
     
@@ -152,7 +161,7 @@ def evaluar_partido_flexible(partido, cuotas_mercado):
     return None
 
 def main():
-    print("Iniciando escáner optimizado con sensibilidad flexible...")
+    print("Iniciando escáner ampliado para el fin de semana...")
     
     partidos = consultar_partidos_hoy()
     cuotas_api = consultar_cuotas_multi_liga()
@@ -181,9 +190,9 @@ def main():
 
     hoy_str = datetime.now().strftime('%Y-%m-%d')
     if apuestas_encontradas:
-        mensaje_final = f"🤖 <b>REPORTE QUANT FLEXIBLE ({hoy_str})</b> 🤖\n\n" + "".join(apuestas_encontradas)
+        mensaje_final = f"🤖 <b>REPORTE QUANT FIN DE SEMANA ({hoy_str})</b> 🤖\n\n" + "".join(apuestas_encontradas)
     else:
-        mensaje_final = f"🤖 <b>Bot Quant Activo</b> ({hoy_str}): Escaneo flexible completado. No se registran partidos activos en las ligas consultadas para este bloque horario."
+        mensaje_final = f"🤖 <b>Bot Quant Activo</b> ({hoy_str}): Escaneo ampliado finalizado. Sin cruces con cuotas activas en el rango actual."
 
     enviar_telegram(mensaje_final)
     print("¡Proceso finalizado y enviado al canal!")
