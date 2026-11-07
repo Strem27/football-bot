@@ -9,24 +9,34 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 def enviar_telegram(mensaje):
-    """Envía la alerta formateada al chat de Telegram usando texto plano si falla el HTML."""
+    """Envía la alerta formateada a Telegram, dividiendo el texto si es muy largo."""
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Error: Faltan las credenciales de Telegram en los Secrets.")
         return False
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": mensaje,
-        "parse_mode": "HTML"
-    }
-    try:
-        response = requests.post(url, json=payload)
-        print(f"Respuesta de Telegram: {response.status_code} - {response.text}")
-        return response.status_code == 200
-    except Exception as e:
-        print(f"Error enviando mensaje a Telegram: {e}")
-        return False
+    
+    # Dividir el mensaje si supera los 4000 caracteres
+    max_len = 4000
+    mensajes = [mensaje[i:i+max_len] for i in range(0, len(mensaje), max_len)]
+    
+    exito = True
+    for msg in mensajes:
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": msg
+        }
+        try:
+            response = requests.post(url, json=payload)
+            print(f"Respuesta de Telegram: {response.status_code}")
+            if response.status_code != 200:
+                print(f"Detalle error: {response.text}")
+                exito = False
+        except Exception as e:
+            print(f"Error enviando mensaje a Telegram: {e}")
+            exito = False
+            
+    return exito
 
 def consultar_partidos_hoy():
     """Consulta partidos programados ampliando el rango al fin de semana completo."""
@@ -189,9 +199,9 @@ def main():
 
     hoy_str = datetime.now().strftime('%Y-%m-%d')
     if apuestas_encontradas:
-        mensaje_final = f"REPORTE QUANT FIN DE SEMANA ({hoy_str})\n\n" + "".join(apuestas_encontradas)
+        mensaje_final = f"REPORTE QUANT FIN DE SEMANA ({hoy_str}) - Total Oportunidades: {len(apuestas_encontradas)}\n\n" + "".join(apuestas_encontradas)
     else:
-        mensaje_final = f"Bot Quant Activo ({hoy_str}): Escaneo ampliado finalizado. Se analizaron {len(partidos)} partidos pero sin cruces bajo los umbrales configurados."
+        mensaje_final = f"Bot Quant Activo ({hoy_str}): Escaneo completado. Se analizaron {len(partidos)} partidos pero sin cruces bajo los umbrales configurados."
 
     enviar_telegram(mensaje_final)
     print("¡Proceso finalizado y enviado al canal!")
