@@ -8,6 +8,14 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    
+    # Declaramos las variables aquí para que estén disponibles en todo el flujo
+    env:
+      FOOTBALL_DATA_KEY: ${{ secrets.FOOTBALL_DATA_KEY }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      CHAT_ID: ${{ secrets.CHAT_ID }}
+
     steps:
       - name: Checkout Código
         uses: actions/checkout@v3
@@ -22,9 +30,4 @@ jobs:
           pip install requests rapidfuzz flask
 
       - name: Ejecutar Bot
-        env:
-          FOOTBALL_DATA_KEY: ${{ secrets.FOOTBALL_DATA_KEY }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python ejecutar_bot.py
