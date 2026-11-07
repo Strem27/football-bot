@@ -56,7 +56,7 @@ def consultar_partidos_hoy():
 
 def consultar_cuotas_multi_liga():
     """Consulta cuotas en vivo de múltiples ligas europeas en The Odds API."""
-deportes = ["soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a", "soccer_germany_bundesliga", "soccer_france_ligue_one"]
+    deportes = ["soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a", "soccer_germany_bundesliga", "soccer_france_ligue_one"]
     eventos_totales = []
     
     for deporte in deportes:
@@ -135,7 +135,6 @@ def evaluar_partido_flexible(partido, cuotas_mercado):
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
-        # Filtro flexible: aceptamos cualquier EV positivo con un stake mínimo de 0.01%
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         if ev > -0.01 and stake_k > 0.01:
             mejores.append({
@@ -187,7 +186,7 @@ def main():
         mensaje_final = f"🤖 <b>Bot Quant Activo</b> ({hoy_str}): Escaneo flexible completado. No se registran partidos activos en las ligas consultadas para este bloque horario."
 
     enviar_telegram(mensaje_final)
-    print("¡Proceso finalizado y enviado a Telegram!")
+    print("¡Proceso finalizado y enviado al canal!")
 
 if __name__ == "__main__":
     main()
