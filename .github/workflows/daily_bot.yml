@@ -25,4 +25,6 @@ jobs:
         env:
           FOOTBALL_DATA_KEY: ${{ secrets.FOOTBALL_DATA_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN}}
+          CHAT_ID: ${{ secrets.CHAT_ID}}
         run: python ejecutar_bot.py
