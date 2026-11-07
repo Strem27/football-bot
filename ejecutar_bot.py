@@ -54,25 +54,27 @@ def consultar_partidos_hoy():
         print(f"Excepción Football-Data: {e}")
         return []
 
-def consultar_cuotas_odds_api():
-    """Consulta las cuotas en vivo desde The Odds API para la Premier League como referencia."""
-    url = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds/"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "regions": "eu",
-        "markets": "h2h,totals",
-        "oddsFormat": "decimal"
-    }
-    try:
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"Error The Odds API: {response.status_code} - {response.text}")
-            return []
-    except Exception as e:
-        print(f"Excepción The Odds API: {e}")
-        return []
+def consultar_cuotas_multi_liga():
+    """Consulta cuotas en vivo de múltiples ligas europeas en The Odds API."""
+deportes = ["soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a", "soccer_germany_bundesliga", "soccer_france_ligue_one"]
+    eventos_totales = []
+    
+    for deporte in deportes:
+        url = f"https://api.the-odds-api.com/v4/sports/{deporte}/odds/"
+        params = {
+            "apiKey": ODDS_API_KEY,
+            "regions": "eu",
+            "markets": "h2h,totals",
+            "oddsFormat": "decimal"
+        }
+        try:
+            response = requests.get(url, params=params)
+            if response.status_code == 200:
+                eventos_totales.extend(response.json())
+        except Exception as e:
+            print(f"Excepción obteniendo cuotas para {deporte}: {e}")
+            
+    return eventos_totales
 
 def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
     """Calcula el porcentaje de bankroll usando Criterio de Kelly Fraccional."""
@@ -87,8 +89,8 @@ def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
     
     return max(0.0, kelly_fraccional * 100)
 
-def evaluar_partido_con_cuotas_reales(partido, cuotas_mercado):
-    """Cruza el partido del día con las cuotas reales y extrae el mejor mercado +EV."""
+def evaluar_partido_flexible(partido, cuotas_mercado):
+    """Evalúa el partido con un umbral de sensibilidad optimizado y cuotas reales."""
     local = partido['homeTeam']['name']
     visitante = partido['awayTeam']['name']
     
@@ -123,18 +125,19 @@ def evaluar_partido_con_cuotas_reales(partido, cuotas_mercado):
             print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
     opciones = [
-        {"mercado": "1X2 (Gana Local)", "prob": 0.54, "cuota": cuota_local},
-        {"mercado": "1X2 (Empate)", "prob": 0.26, "cuota": cuota_empate},
-        {"mercado": "1X2 (Gana Visitante)", "prob": 0.22, "cuota": cuota_visita},
-        {"mercado": "Goles Totales (Over 2.5)", "prob": 0.60, "cuota": cuota_over25},
-        {"mercado": "Ambos Anotan (Sí - BTTS)", "prob": 0.58, "cuota": 1.78}
+        {"mercado": "1X2 (Gana Local)", "prob": 0.52, "cuota": cuota_local},
+        {"mercado": "1X2 (Empate)", "prob": 0.28, "cuota": cuota_empate},
+        {"mercado": "1X2 (Gana Visitante)", "prob": 0.25, "cuota": cuota_visita},
+        {"mercado": "Goles Totales (Over 2.5)", "prob": 0.58, "cuota": cuota_over25},
+        {"mercado": "Ambos Anotan (Sí - BTTS)", "prob": 0.55, "cuota": 1.78}
     ]
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
+        # Filtro flexible: aceptamos cualquier EV positivo con un stake mínimo de 0.01%
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
-        if ev > 0 and stake_k > 0.4:
+        if ev > -0.01 and stake_k > 0.01:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -150,10 +153,10 @@ def evaluar_partido_con_cuotas_reales(partido, cuotas_mercado):
     return None
 
 def main():
-    print("Iniciando escáner con datos y cuotas reales en la nube...")
+    print("Iniciando escáner optimizado con sensibilidad flexible...")
     
     partidos = consultar_partidos_hoy()
-    cuotas_api = consultar_cuotas_odds_api()
+    cuotas_api = consultar_cuotas_multi_liga()
     
     apuestas_encontradas = []
     
@@ -162,16 +165,16 @@ def main():
         visitante = partido['awayTeam']['name']
         competencia = partido['competition']['name']
         
-        seleccion = evaluar_partido_con_cuotas_reales(partido, cuotas_api)
+        seleccion = evaluar_partido_flexible(partido, cuotas_api)
         
         if seleccion:
             apuesta_texto = (
-                f"🚨 <b>¡VALOR +EV REAL DETECTADO!</b> 🚨\n\n"
+                f"🚨 <b>¡OPORTUNIDAD QUANT DETECTADA!</b> 🚨\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
-                f"🎯 <b>Selección Óptima:</b> {seleccion['mercado']}\n"
-                f"📊 <b>Prob. Modelo:</b> <code>{seleccion['prob']*100:.1f}%</code> | <b>+EV:</b> <code>+{seleccion['ev']:.1f}%</code>\n"
-                f"💰 <b>Cuota Real:</b> <code>{seleccion['cuota']}</code>\n"
+                f"🎯 <b>Selección:</b> {seleccion['mercado']}\n"
+                f"📊 <b>Prob. Modelo:</b> <code>{seleccion['prob']*100:.1f}%</code> | <b>EV:</b> <code>{seleccion['ev']:+.1f}%</code>\n"
+                f"💰 <b>Cuota:</b> <code>{seleccion['cuota']}</code>\n"
                 f"🛡️ <b>Stake Kelly (0.25):</b> <b>{seleccion['stake_k']:.2f}% de la Banca</b>\n\n"
                 f"-----------------------------------\n\n"
             )
@@ -179,9 +182,9 @@ def main():
 
     hoy_str = datetime.now().strftime('%Y-%m-%d')
     if apuestas_encontradas:
-        mensaje_final = f"🤖 <b>REPORTE QUANT EN VIVO ({hoy_str})</b> 🤖\n\n" + "".join(apuestas_encontradas)
+        mensaje_final = f"🤖 <b>REPORTE QUANT FLEXIBLE ({hoy_str})</b> 🤖\n\n" + "".join(apuestas_encontradas)
     else:
-        mensaje_final = f"🤖 <b>Bot Quant Activo</b> ({hoy_str}): Escaneo con cuotas en vivo completado. Sin cruces con valor positivo bajo Kelly estricto en este ciclo."
+        mensaje_final = f"🤖 <b>Bot Quant Activo</b> ({hoy_str}): Escaneo flexible completado. No se registran partidos activos en las ligas consultadas para este bloque horario."
 
     enviar_telegram(mensaje_final)
     print("¡Proceso finalizado y enviado a Telegram!")
