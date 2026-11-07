@@ -22,6 +22,7 @@ def enviar_telegram(mensaje):
     }
     try:
         response = requests.post(url, json=payload)
+        print(f"Respuesta de Telegram: {response.status_code}")
         return response.status_code == 200
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}")
@@ -30,19 +31,10 @@ def enviar_telegram(mensaje):
 def main():
     print("Iniciando análisis diario de partidos en la nube...")
     
-    if not FOOTBALL_DATA_KEY or not ODDS_API_KEY:
-        print("Advertencia: Faltan las llaves de las APIs de fútbol u odds.")
-
-    # 1. Aquí colocas la llamada a tu lógica de consulta de partidos
-    # (por ejemplo, tu función que consulta Football-Data y The Odds API)
+    # Mensaje de prueba obligatorio para verificar la conexión
+    enviar_telegram("🤖 <b>Bot Quant Activo</b>: ¡Prueba de conexión exitosa desde GitHub Actions!")
     
-    # 2. Aquí ejecutas tu evaluación multimercado y cálculo de Kelly (0.25)
-    
-    # 3. Envias el resultado consolidado
-    mensaje_prueba = "🤖 <b>Bot Quant Activo</b>: Análisis diario ejecutado correctamente desde GitHub Actions."
-    enviar_telegram(mensaje_prueba)
-    
-    print("¡Proceso finalizado con éxito y enviado a Telegram!")
+    print("¡Proceso finalizado con éxito!")
 
 if __name__ == "__main__":
     main()
