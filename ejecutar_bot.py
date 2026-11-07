@@ -106,10 +106,10 @@ def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
     
     return max(0.0, kelly_fraccional * 100)
 
-def evaluar_partido_alta_seguridad(partido, cuotas_mercado):
+def evaluar_partido_punto_medio(partido, cuotas_mercado):
     """
-    Filtro estricto: Solo acepta apuestas con alta probabilidad modelo, 
-    un EV superior al 5% real y un stake de Kelly significativo (> 0.5%).
+    Filtro equilibrado: Exige EV > 2% y un Stake Kelly > 0.2% 
+    para mantener alta calidad sin perder volumen clave.
     """
     local = partido.get('homeTeam', {}).get('name', 'Local')
     visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
@@ -145,11 +145,11 @@ def evaluar_partido_alta_seguridad(partido, cuotas_mercado):
             print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
     opciones = [
-        {"mercado": "1X2 Gana Local", "prob": 0.58, "cuota": cuota_local},
-        {"mercado": "1X2 Empate", "prob": 0.25, "cuota": cuota_empate},
-        {"mercado": "1X2 Gana Visitante", "prob": 0.22, "cuota": cuota_visita},
-        {"mercado": "Goles Totales Over 2.5", "prob": 0.62, "cuota": cuota_over25},
-        {"mercado": "Ambos Anotan BTTS", "prob": 0.60, "cuota": 1.78}
+        {"mercado": "1X2 Gana Local", "prob": 0.55, "cuota": cuota_local},
+        {"mercado": "1X2 Empate", "prob": 0.26, "cuota": cuota_empate},
+        {"mercado": "1X2 Gana Visitante", "prob": 0.23, "cuota": cuota_visita},
+        {"mercado": "Goles Totales Over 2.5", "prob": 0.60, "cuota": cuota_over25},
+        {"mercado": "Ambos Anotan BTTS", "prob": 0.57, "cuota": 1.78}
     ]
     
     mejores = []
@@ -157,8 +157,8 @@ def evaluar_partido_alta_seguridad(partido, cuotas_mercado):
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # FILTRO DE ALTA SEGURIDAD: Exigimos EV > 5% y Stake Kelly > 0.5%
-        if ev > 0.05 and stake_k > 0.5:
+        # PUNTO MEDIO: EV > 2% y Stake Kelly > 0.2%
+        if ev > 0.02 and stake_k > 0.2:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -174,7 +174,7 @@ def evaluar_partido_alta_seguridad(partido, cuotas_mercado):
     return None
 
 def main():
-    print("Iniciando escáner de alta seguridad...")
+    print("Iniciando escáner en el punto de equilibrio...")
     
     partidos = consultar_partidos_hoy()
     cuotas_api = consultar_cuotas_multi_liga()
@@ -186,14 +186,14 @@ def main():
         visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
         competencia = partido.get('competition', {}).get('name', 'Liga Europea')
         
-        seleccion = evaluar_partido_alta_seguridad(partido, cuotas_api)
+        seleccion = evaluar_partido_punto_medio(partido, cuotas_api)
         
         if seleccion:
             apuesta_texto = (
-                f"🎯 <b>ALTA SEGURIDAD QUANT</b> 🎯\n"
+                f"⚖️ <b>OPORTUNIDAD EQUILIBRADA QUANT</b> ⚖️\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
-                f"📈 <b>Selección:</b> {seleccion['mercado']}\n"
+                f"🎯 <b>Selección:</b> {seleccion['mercado']}\n"
                 f"📊 <b>Prob:</b> {seleccion['prob']*100:.1f}% | <b>EV:</b> +{seleccion['ev']:.1f}%\n"
                 f"💰 <b>Cuota:</b> {seleccion['cuota']}\n"
                 f"🛡️ <b>Stake Kelly (0.25):</b> {seleccion['stake_k']:.2f}% de la Banca\n"
@@ -203,13 +203,13 @@ def main():
 
     hoy_str = datetime.now().strftime('%Y-%m-%d')
     if apuestas_encontradas:
-        mensaje_final = f"🔥 <b>SELECCIONES VIP DE ALTA CONFIANZA ({hoy_str})</b> 🔥\nTotal: {len(apuestas_encontradas)}\n\n" + "".join(apuestas_encontradas)
+        mensaje_final = f"📊 <b>SELECCIONES ÓPTIMAS FIN DE SEMANA ({hoy_str})</b> 📊\nTotal: {len(apuestas_encontradas)}\n\n" + "".join(apuestas_encontradas)
     else:
-        mensaje_final = f"🛡️ <b>Bot Quant Activo ({hoy_str})</b>: Escaneo de alta seguridad finalizado. Se filtraron todos los partidos de riesgo; ninguna opción cumplió con el estándar estricto de valor y confianza para este ciclo."
+        mensaje_final = f"🤖 <b>Bot Quant Activo ({hoy_str})</b>: Escaneo en punto medio finalizado. Sin cruces con el margen del 2% en este ciclo."
 
     enviar_telegram(mensaje_final)
     print("¡Proceso finalizado y enviado al canal!")
 
-if __name__ == "main":
+if __name__ == "__main__":
     main()
-        
+                
