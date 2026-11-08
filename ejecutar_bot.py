@@ -149,18 +149,18 @@ def poisson_prob(lmbda, k):
     except:
         return 0.0
 
-def simular_mercados_alta_precision(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15):
+def simular_mercados_anti_monopolio(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15):
     """
-    Motor cuantitativo de alta precisión con simulación independiente por Poisson 
-    y neutralización estricta del sesgo hacia el Under.
+    Modelo matemático riguroso con penalización severa a mercados repetitivos 
+    para forzar la rotación hacia 1X2 puro, Over 2.5 y BTTS.
     """
     p_l = 1.0 / cuota_local
     p_e = 1.0 / cuota_empate
     p_v = 1.0 / cuota_visita
     
     implied_p_over = 1.0 / cuota_over25
-    lambda_global = 2.45 + (implied_p_over * 0.8)
-    lambda_global = max(2.0, min(lambda_global, 3.4))
+    lambda_global = 2.5 + (implied_p_over * 0.7)
+    lambda_global = max(2.1, min(lambda_global, 3.5))
     
     suma_p_h2h = p_l + p_e + p_v
     lambda_local = lambda_global * (p_l / suma_p_h2h) * 1.02
@@ -190,26 +190,26 @@ def simular_mercados_alta_precision(cuota_local, cuota_empate, cuota_visita, cuo
     prob_1x = p_l + p_e
     prob_x2 = p_v + p_e
     
-    cuota_1x = round(1.0 / max(0.05, prob_1x * 0.95), 2)
-    cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.95), 2)
-    cuota_btts = 1.88 if prob_btts > 0.5 else 2.05
+    cuota_1x = round(1.0 / max(0.05, prob_1x * 0.94), 2)
+    cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.94), 2)
+    cuota_btts = 1.85 if prob_btts > 0.48 else 2.10
 
-    # Abanico completo de mercados con penalización estricta al Under para forzar diversidad
+    # Ponderaciones estrictas: Impulsamos Goles (Over) y 1X2 puro; castigamos Under y Doble Oportunidad
     mercados = [
-        {"mercado": "1X2 - Gana Local", "prob": p_l * 1.02, "cuota": cuota_local},
+        {"mercado": "1X2 - Gana Local", "prob": p_l * 1.05, "cuota": cuota_local},
         {"mercado": "1X2 - Empate", "prob": p_e * 1.02, "cuota": cuota_empate},
-        {"mercado": "1X2 - Gana Visitante", "prob": p_v * 1.02, "cuota": cuota_visita},
-        {"mercado": "Doble Oportunidad - 1X (Local o Empate)", "prob": prob_1x * 1.01, "cuota": cuota_1x},
-        {"mercado": "Doble Oportunidad - X2 (Visitante o Empate)", "prob": prob_x2 * 1.01, "cuota": cuota_x2},
-        {"mercado": "Goles - Over 2.5", "prob": prob_over_25 * 1.02, "cuota": cuota_over25},
-        {"mercado": "Goles - Under 2.5", "prob": prob_under_25 * 0.88, "cuota": cuota_under25}, # Freno matemático al Under
-        {"mercado": "Goles - Over 1.5", "prob": prob_over_15 * 1.03, "cuota": cuota_over15},
-        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts * 1.02, "cuota": cuota_btts}
+        {"mercado": "1X2 - Gana Visitante", "prob": p_v * 1.05, "cuota": cuota_visita},
+        {"mercado": "Doble Oportunidad - 1X (Local o Empate)", "prob": prob_1x * 0.85, "cuota": cuota_1x}, # Castigo fuerte
+        {"mercado": "Doble Oportunidad - X2 (Visitante o Empate)", "prob": prob_x2 * 0.85, "cuota": cuota_x2}, # Castigo fuerte
+        {"mercado": "Goles - Over 2.5", "prob": prob_over_25 * 1.08, "cuota": cuota_over25}, # Impulso al Over
+        {"mercado": "Goles - Under 2.5", "prob": prob_under_25 * 0.75, "cuota": cuota_under25}, # Castigo severo al Under
+        {"mercado": "Goles - Over 1.5", "prob": prob_over_15 * 1.05, "cuota": cuota_over15},
+        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts * 1.05, "cuota": cuota_btts}
     ]
     return mercados
 
-def evaluar_partido_multimercado(partido, cuotas_mercado):
-    """Busca el partido, simula los mercados y exige filtros de alta confianza."""
+def evaluar_partido_multimercado(partido, cuotas_mercado, mercados_enviados_recientes):
+    """Evalúa los mercados aplicando control de diversidad para evitar saturar con el mismo tipo de apuesta."""
     local = partido.get('homeTeam', {}).get('name', '')
     visitante = partido.get('awayTeam', {}).get('name', '')
     
@@ -254,32 +254,37 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
         except Exception as e:
             print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
-    opciones = simular_mercados_alta_precision(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15)
+    opciones = simular_mercados_anti_monopolio(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15)
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # FILTRO DE ALTA CONFIANZA: Exigimos EV > 5.0% y Stake Kelly > 0.6%
-        if ev > 0.05 and stake_k > 0.6:
+        # Filtro de máxima exigencia: EV > 7.0% y Stake Kelly > 0.8%
+        if ev > 0.07 and stake_k > 0.8:
+            # Control anti-monopolio: si este mercado ya domina las alertas recientes, lo ignoramos temporalmente
+            tipo_mercado = op["mercado"].split(" - ")[0] # Ej: "Goles", "1X2", "Doble Oportunidad"
+            if mercados_enviados_recientes.count(tipo_mercado) >= 2:
+                continue
+                
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
                 "cuota": op["cuota"],
                 "ev": ev * 100,
-                "stake_k": stake_k
+                "stake_k": stake_k,
+                "tipo": tipo_mercado
             })
             
     if mejores:
-        # Selecciona estrictamente la mejor oportunidad de todo el abanico
         mejores.sort(key=lambda x: x["stake_k"], reverse=True)
         return mejores[0]
         
     return None
 
 def main():
-    print("Iniciando motor cuantitativo de alta precisión y alta confianza...")
+    print("Iniciando motor cuantitativo francotirador (Anti-Monopolio y Alta Exigencia)...")
     
     partidos = consultar_partidos_hoy()
     if not partidos:
@@ -290,13 +295,14 @@ def main():
     
     alertas_enviadas = 0
     hoy_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    mercados_enviados_recientes = []
     
     for partido in partidos:
         local = partido.get('homeTeam', {}).get('name', 'Local')
         visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
         competencia = partido.get('competition', {}).get('name', 'Liga Europea')
         
-        seleccion = evaluar_partido_multimercado(partido, cuotas_api)
+        seleccion = evaluar_partido_multimercado(partido, cuotas_api, mercados_enviados_recientes)
         
         if seleccion:
             prob_pct = seleccion['prob'] * 100
@@ -304,6 +310,9 @@ def main():
             cuota_val = seleccion['cuota']
             stake_val = seleccion['stake_k']
             mercado_val = seleccion['mercado']
+            
+            # Registramos el tipo de mercado para mantener diversidad
+            mercados_enviados_recientes.append(seleccion['tipo'])
             
             datos_pick = {
                 "fecha": hoy_str,
@@ -319,7 +328,7 @@ def main():
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
-                f"💎 <b>ALERTA QUANT VIP (ALTA CONFIANZA)</b> 💎\n\n"
+                f"🎯 <b>ALERTA QUANT FRANCOTIRADOR</b> 🎯\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
                 f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
@@ -332,8 +341,8 @@ def main():
             if exito:
                 alertas_enviadas += 1
                 
-    print(f"Proceso finalizado. Total de alertas VIP enviadas y registradas: {alertas_enviadas}")
+    print(f"Proceso finalizado. Total de alertas selectivas enviadas y registradas: {alertas_enviadas}")
 
 if __name__ == "__main__":
     main()
-                                    
+        
