@@ -99,53 +99,81 @@ def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
 
 def poisson_prob(lmbda, k):
     """Calcula la probabilidad de Poisson para k eventos dado un promedio lmbda."""
-    return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
+    try:
+        return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
+    except:
+        return 0.0
 
-def simular_mercados_poisson(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
+def simular_todos_los_mercados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15):
     """
-    Modelo matemático basado en Poisson para derivar probabilidades objetivas 
-    a partir de las cuotas de las casas de apuestas (quitar sesgo humano).
+    Simula mediante Poisson la matriz completa del partido y deriva 
+    probabilidades para 1X2, Doble Oportunidad, Over/Under y BTTS.
     """
-    # Convertimos cuotas a probabilidades implícitas del mercado
     p_l = 1.0 / cuota_local
     p_e = 1.0 / cuota_empate
     p_v = 1.0 / cuota_visita
     
-    # Estimación de goles esperados (Lambda) mediante la cuota de Over/Under
-    # Si la cuota de Over 2.5 es baja, el lambda global es alto.
-    lambda_global = 2.6 if cuota_over25 < 1.85 else 2.3
+    # Estimación de lambda global basada en la línea de 2.5 goles
+    if cuota_under25 < cuota_over25:
+        lambda_global = 2.15 + (max(0, cuota_over25 - cuota_under25) * 0.15)
+    else:
+        lambda_global = 2.75 + (max(0, cuota_under25 - cuota_over25) * 0.15)
     
-    # Distribuimos el lambda entre local y visitante según su favoritismo en el 1X2
-    total_prob_h2h = p_l + p_e + p_v
-    lambda_local = lambda_global * (p_l / total_prob_h2h) * 1.05
-    lambda_visita = lambda_global * (p_v / total_prob_h2h) * 0.95
+    lambda_global = max(1.7, min(lambda_global, 3.6))
     
-    # Simulamos matriz de marcadores con Poisson (hasta 5 goles por equipo)
+    suma_p_h2h = p_l + p_e + p_v
+    lambda_local = lambda_global * (p_l / suma_p_h2h) * 1.04
+    lambda_visita = lambda_global * (p_v / suma_p_h2h) * 0.96
+    
+    # Acumuladores de simulación
     prob_over_25 = 0.0
+    prob_under_25 = 0.0
+    prob_over_15 = 0.0
     prob_btts = 0.0
     
-    for g_local in range(6):
-        for g_visita in range(6):
+    for g_local in range(7):
+        for g_visita in range(7):
             p_match = poisson_prob(lambda_local, g_local) * poisson_prob(lambda_visita, g_visita)
-            if (g_local + g_visita) > 2.5:
+            total_goles = g_local + g_visita
+            
+            if total_goles > 2.5:
                 prob_over_25 += p_match
+            else:
+                prob_under_25 += p_match
+                
+            if total_goles > 1.5:
+                prob_over_15 += p_match
+                
             if g_local > 0 and g_visita > 0:
                 prob_btts += p_match
 
-    # Probabilidades depuradas por el modelo cuantitativo
+    # Probabilidades para Doble Oportunidad
+    prob_1x = p_l + p_e
+    prob_x2 = p_v + p_e
+    prob_12 = p_l + p_v
+
+    # Cuotas estimadas para mercados derivados si no vienen directos
+    cuota_1x = round(1.0 / max(0.05, prob_1x * 0.96), 2)
+    cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.96), 2)
+    cuota_btts = 1.85 if prob_btts > 0.5 else 1.95
+
+    # Abanico completo de mercados evaluados con rigor matemático
     mercados_evaluados = [
-        {"mercado": "1X2 - Gana Local", "prob": p_l * 1.03, "cuota": cuota_local}, # Ajuste de margen analítico
-        {"mercado": "1X2 - Empate", "prob": p_e * 1.02, "cuota": cuota_empate},
-        {"mercado": "1X2 - Gana Visitante", "prob": p_v * 1.03, "cuota": cuota_visita},
+        {"mercado": "1X2 - Gana Local", "prob": p_l, "cuota": cuota_local},
+        {"mercado": "1X2 - Empate", "prob": p_e, "cuota": cuota_empate},
+        {"mercado": "1X2 - Gana Visitante", "prob": p_v, "cuota": cuota_visita},
+        {"mercado": "Doble Oportunidad - 1X (Local o Empate)", "prob": prob_1x, "cuota": cuota_1x},
+        {"mercado": "Doble Oportunidad - X2 (Visitante o Empate)", "prob": prob_x2, "cuota": cuota_x2},
         {"mercado": "Goles - Over 2.5", "prob": prob_over_25, "cuota": cuota_over25},
-        {"mercado": "Goles - Under 2.5", "prob": 1.0 - prob_over_25, "cuota": cuota_under25},
-        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": 1.78}
+        {"mercado": "Goles - Under 2.5", "prob": prob_under_25, "cuota": cuota_under25},
+        {"mercado": "Goles - Over 1.5", "prob": prob_over_15, "cuota": cuota_over15},
+        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": cuota_btts}
     ]
     
     return mercados_evaluados
 
-def evaluar_partido_con_modelo(partido, cuotas_mercado):
-    """Evalúa el partido cruzando el modelo de Poisson y filtrando por EV y Kelly."""
+def evaluar_partido_multimercado(partido, cuotas_mercado):
+    """Evalúa todo el abanico de mercados y selecciona la oportunidad óptima."""
     local = partido.get('homeTeam', {}).get('name', 'Local')
     visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
     
@@ -155,12 +183,12 @@ def evaluar_partido_con_modelo(partido, cuotas_mercado):
             cuotas_encontradas = evento.get('bookmakers', [])
             break
             
-    # Cuotas por defecto si la API no las trae en ese instante exacto
     cuota_local = 2.10
     cuota_empate = 3.40
     cuota_visita = 3.30
     cuota_over25 = 1.90
     cuota_under25 = 1.90
+    cuota_over15 = 1.30
     
     if cuotas_encontradas:
         try:
@@ -174,25 +202,28 @@ def evaluar_partido_con_modelo(partido, cuotas_mercado):
                             cuota_visita = outcome['price']
                         else:
                             cuota_empate = outcome['price']
-                elif m['key'] == 'totals' and m['outcomes'][0]['point'] == 2.5:
+                elif m['key'] == 'totals':
                     for outcome in m['outcomes']:
-                        if outcome['name'].lower() == 'over':
-                            cuota_over25 = outcome['price']
-                        else:
-                            cuota_under25 = outcome['price']
+                        if outcome.get('point') == 2.5:
+                            if outcome['name'].lower() == 'over':
+                                cuota_over25 = outcome['price']
+                            else:
+                                cuota_under25 = outcome['price']
+                        elif outcome.get('point') == 1.5:
+                            if outcome['name'].lower() == 'over':
+                                cuota_over15 = outcome['price']
         except Exception as e:
             print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
-    # Generamos el abanico de opciones mediante el modelo matemático
-    opciones = simular_mercados_poisson(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
+    opciones = simular_todos_los_mercados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15)
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # Filtro cuantitativo optimizado: EV > 1.5% y Stake Kelly > 0.15% (evita silencio total pero mantiene rigor)
-        if ev > 0.015 and stake_k > 0.15:
+        # Filtro de valor positivo real: EV > 2% y Stake Kelly > 0.2%
+        if ev > 0.02 and stake_k > 0.2:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -202,14 +233,14 @@ def evaluar_partido_con_modelo(partido, cuotas_mercado):
             })
             
     if mejores:
-        # Seleccionamos el mercado con mayor valor estadístico detectado en el partido
+        # Selecciona estrictamente la mejor opción entre todos los mercados evaluados
         mejores.sort(key=lambda x: x["stake_k"], reverse=True)
         return mejores[0]
         
     return None
 
 def main():
-    print("Iniciando motor cuantitativo con Modelo Poisson y Simulación...")
+    print("Iniciando motor analítico con análisis multimercado completo...")
     
     partidos = consultar_partidos_hoy()
     cuotas_api = consultar_cuotas_multi_liga()
@@ -221,14 +252,14 @@ def main():
         visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
         competencia = partido.get('competition', {}).get('name', 'Liga Europea')
         
-        seleccion = evaluar_partido_con_modelo(partido, cuotas_api)
+        seleccion = evaluar_partido_multimercado(partido, cuotas_api)
         
         if seleccion:
             mensaje_alerta = (
-                f"📐 <b>MODELO POISSON +EV</b> 📐\n\n"
+                f"🎯 <b>PICK QUANT MULTIMERCADO</b> 🎯\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
-                f"📌 <b>Selección:</b> {seleccion['mercado']}\n"
+                f"📌 <b>Selección Óptima:</b> {seleccion['mercado']}\n"
                 f"📊 <b>Prob. Modelo:</b> {seleccion['prob']*100:.1f}% | <b>EV:</b> +{seleccion['ev']:.1f}%\n"
                 f"💰 <b>Cuota Real:</b> {seleccion['cuota']}\n"
                 f"🛡️ <b>Stake Kelly (0.25):</b> <b>{seleccion['stake_k']:.2f}% de la Banca</b>\n"
@@ -238,8 +269,8 @@ def main():
             if exito:
                 alertas_enviadas += 1
                 
-    print(f"Proceso finalizado. Total de alertas con modelo matemático enviadas: {alertas_enviadas}")
+    print(f"Proceso finalizado. Total de alertas individuales enviadas: {alertas_enviadas}")
 
 if __name__ == "__main__":
     main()
-        
+                            
