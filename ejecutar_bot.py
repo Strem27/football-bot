@@ -1,6 +1,7 @@
 import os
 import math
 import csv
+import time
 import requests
 from datetime import datetime, timedelta
 
@@ -19,7 +20,6 @@ def registrar_en_csv(datos_pick):
     try:
         with open(ARCHIVO_CSV, mode='a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            # Si el archivo es nuevo, escribimos la cabecera profesional
             if not archivo_existe:
                 writer.writerow([
                     "Fecha_Ejecucion", "Liga", "Partido", "Mercado", 
@@ -42,7 +42,7 @@ def registrar_en_csv(datos_pick):
         print(f"Error escribiendo en el CSV: {e}")
 
 def enviar_telegram(mensaje):
-    """Envía un mensaje individual y directo a Telegram."""
+    """Envía un mensaje individual y directo a Telegram con control de errores."""
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Error: Faltan las credenciales de Telegram en los Secrets.")
         return False
@@ -54,14 +54,14 @@ def enviar_telegram(mensaje):
         "parse_mode": "HTML"
     }
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)
         return response.status_code == 200
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}")
         return False
 
 def consultar_partidos_hoy():
-    """Consulta partidos programados en el rango del fin de semana."""
+    """Consulta partidos programados con reintentos para evitar fallos de red o 504."""
     hoy = datetime.now().strftime('%Y-%m-%d')
     mañana = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
     
@@ -75,21 +75,23 @@ def consultar_partidos_hoy():
         "competitions": competencias
     }
     
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code == 200:
-            matches = response.json().get("matches", [])
-            print(f"Partidos encontrados en Football-Data: {len(matches)}")
-            return matches
-        else:
-            print(f"Error Football-Data: {response.status_code}")
-            return []
-    except Exception as e:
-        print(f"Excepción Football-Data: {e}")
-        return []
+    for intento in range(3):
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=12)
+            if response.status_code == 200:
+                matches = response.json().get("matches", [])
+                print(f"Partidos encontrados en Football-Data: {len(matches)}")
+                return matches
+            else:
+                print(f"Error Football-Data (Intento {intento+1}): {response.status_code}")
+        except Exception as e:
+            print(f"Excepción en Football-Data (Intento {intento+1}): {e}")
+        time.sleep(2)
+        
+    return []
 
 def consultar_cuotas_multi_liga():
-    """Consulta cuotas en vivo de múltiples ligas europeas en The Odds API."""
+    """Consulta cuotas de múltiples ligas con manejo de tiempos de espera y reintentos."""
     deportes = [
         "soccer_epl", 
         "soccer_spain_la_liga", 
@@ -107,12 +109,23 @@ def consultar_cuotas_multi_liga():
             "markets": "h2h,totals",
             "oddsFormat": "decimal"
         }
-        try:
-            response = requests.get(url, params=params)
-            if response.status_code == 200:
-                eventos_totales.extend(response.json())
-        except Exception as e:
-            print(f"Excepción obteniendo cuotas para {deporte}: {e}")
+        
+        exito = False
+        for intento in range(2):
+            try:
+                response = requests.get(url, params=params, timeout=15)
+                if response.status_code == 200:
+                    eventos_totales.extend(response.json())
+                    exito = True
+                    break
+                else:
+                    print(f"Aviso cuotas {deporte} (Código {response.status_code}), reintentando...")
+            except Exception as e:
+                print(f"Timeout o error en cuotas para {deporte} (Intento {intento+1}): {e}")
+            time.sleep(2)
+            
+        if not exito:
+            print(f"No se pudieron obtener cuotas para {deporte} en este ciclo, saltando...")
             
     return eventos_totales
 
@@ -244,7 +257,6 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # Filtro cuantitativo profesional estricto: EV > 3% y Stake Kelly > 0.3%
         if ev > 0.03 and stake_k > 0.3:
             mejores.append({
                 "mercado": op["mercado"],
@@ -261,9 +273,13 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("Iniciando motor cuantitativo profesional con CSV Logger...")
+    print("Iniciando motor cuantitativo profesional con control de Timeouts y CSV...")
     
     partidos = consultar_partidos_hoy()
+    if not partidos:
+        print("No se obtuvieron partidos de Football-Data. Saliendo de manera segura para evitar errores de red.")
+        return
+        
     cuotas_api = consultar_cuotas_multi_liga()
     
     alertas_enviadas = 0
@@ -283,7 +299,6 @@ def main():
             stake_val = seleccion['stake_k']
             mercado_val = seleccion['mercado']
             
-            # Datos estructurados para el registro CSV
             datos_pick = {
                 "fecha": hoy_str,
                 "liga": competencia,
@@ -295,7 +310,6 @@ def main():
                 "stake_k": stake_val
             }
             
-            # Guardamos en el ledger local
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
@@ -316,4 +330,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
