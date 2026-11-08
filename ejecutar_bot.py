@@ -14,9 +14,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 ARCHIVO_CSV = "historial_picks.csv"
 
 def registrar_en_csv(datos_pick):
-    """Registra de forma automática cada pick en un archivo CSV para auditoría y backtesting."""
     archivo_existe = os.path.exists(ARCHIVO_CSV)
-    
     try:
         with open(ARCHIVO_CSV, mode='a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
@@ -25,7 +23,6 @@ def registrar_en_csv(datos_pick):
                     "Fecha_Ejecucion", "Liga", "Partido", "Mercado", 
                     "Cuota", "Prob_Modelo_%", "EV_%", "Stake_Kelly_%", "Estado"
                 ])
-            
             writer.writerow([
                 datos_pick["fecha"],
                 datos_pick["liga"],
@@ -42,7 +39,6 @@ def registrar_en_csv(datos_pick):
         print(f"Error escribiendo en el CSV: {e}")
 
 def enviar_telegram(mensaje):
-    """Envía un mensaje individual y directo a Telegram con control de errores."""
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Error: Faltan las credenciales de Telegram en los Secrets.")
         return False
@@ -61,7 +57,6 @@ def enviar_telegram(mensaje):
         return False
 
 def consultar_partidos_hoy():
-    """Consulta partidos programados con reintentos para evitar fallos de red o 504."""
     hoy = datetime.now().strftime('%Y-%m-%d')
     mañana = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
     
@@ -87,11 +82,9 @@ def consultar_partidos_hoy():
         except Exception as e:
             print(f"Excepción en Football-Data (Intento {intento+1}): {e}")
         time.sleep(2)
-        
     return []
 
 def consultar_cuotas_multi_liga():
-    """Consulta cuotas de múltiples ligas con manejo de tiempos de espera y reintentos."""
     deportes = [
         "soccer_epl", 
         "soccer_spain_la_liga", 
@@ -109,7 +102,6 @@ def consultar_cuotas_multi_liga():
             "markets": "h2h,totals",
             "oddsFormat": "decimal"
         }
-        
         exito = False
         for intento in range(2):
             try:
@@ -123,93 +115,112 @@ def consultar_cuotas_multi_liga():
             except Exception as e:
                 print(f"Timeout o error en cuotas para {deporte} (Intento {intento+1}): {e}")
             time.sleep(2)
-            
         if not exito:
             print(f"No se pudieron obtener cuotas para {deporte} en este ciclo, saltando...")
-            
     return eventos_totales
 
 def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
-    """Calcula el porcentaje de bankroll usando Criterio de Kelly Fraccional."""
     if cuota_decimal <= 1.0 or probabilidad_modelo <= 0:
         return 0.0
-    
     q = 1.0 - probabilidad_modelo
     b = cuota_decimal - 1.0
-    
     kelly_full = (b * probabilidad_modelo - q) / b
-    kelly_fraccional = kelly_full * fraccion
-    
-    return max(0.0, kelly_fraccional * 100)
+    return max(0.0, kelly_full * fraccion * 100)
 
 def poisson_prob(lmbda, k):
-    """Calcula la probabilidad de Poisson para k eventos."""
     try:
         return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
     except:
         return 0.0
 
-def simular_mercados_anti_monopolio(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15):
+def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
     """
-    Modelo matemático riguroso con penalización severa a mercados repetitivos 
-    para forzar la rotación hacia 1X2 puro, Over 2.5 y BTTS.
+    Simulación profesional con matriz bivariada ajustada para corregir 
+    el sesgo natural de los marcadores bajos en Poisson puro.
     """
     p_l = 1.0 / cuota_local
     p_e = 1.0 / cuota_empate
     p_v = 1.0 / cuota_visita
     
-    implied_p_over = 1.0 / cuota_over25
-    lambda_global = 2.5 + (implied_p_over * 0.7)
-    lambda_global = max(2.1, min(lambda_global, 3.5))
+    # Normalizamos el margen de las casas (vig)
+    total_h2h = p_l + p_e + p_v
+    p_l, p_e, p_v = p_l/total_h2h, p_e/total_h2h, p_v/total_h2h
     
-    suma_p_h2h = p_l + p_e + p_v
-    lambda_local = lambda_global * (p_l / suma_p_h2h) * 1.02
-    lambda_visita = lambda_global * (p_v / suma_p_h2h) * 0.98
+    # Derivación de goles esperados (Lambda)
+    implied_over = 1.0 / cuota_over25
+    lambda_global = 2.4 + (implied_over * 0.8)
+    lambda_global = max(2.0, min(lambda_global, 3.4))
     
+    suma_p = p_l + p_e + p_v
+    lambda_local = lambda_global * (p_l / suma_p) * 1.03
+    lambda_visita = lambda_global * (p_v / suma_p) * 0.97
+    
+    # Acumuladores de probabilidad exacta
+    prob_local = 0.0
+    prob_empate = 0.0
+    prob_visitante = 0.0
     prob_over_25 = 0.0
     prob_under_25 = 0.0
-    prob_over_15 = 0.0
     prob_btts = 0.0
     
-    for g_local in range(7):
-        for g_visita in range(7):
-            p_match = poisson_prob(lambda_local, g_local) * poisson_prob(lambda_visita, g_visita)
-            total_goles = g_local + g_visita
-            
-            if total_goles > 2.5:
-                prob_over_25 += p_match
-            else:
-                prob_under_25 += p_match
-                
-            if total_goles > 1.5:
-                prob_over_15 += p_match
-                
-            if g_local > 0 and g_visita > 0:
-                prob_btts += p_match
-
-    prob_1x = p_l + p_e
-    prob_x2 = p_v + p_e
+    # Matriz bivariada de 7x7 con factor de corrección Dixon-Coles para 0-0 y 1-1
+    rho = -0.10 # Factor de corrección estándar para baja anotación
     
-    cuota_1x = round(1.0 / max(0.05, prob_1x * 0.94), 2)
-    cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.94), 2)
-    cuota_btts = 1.85 if prob_btts > 0.48 else 2.10
+    for x in range(7):
+        for y in range(7):
+            p_xy = poisson_prob(lambda_local, x) * poisson_prob(lambda_visita, y)
+            
+            # Ajuste analítico de correlación para resultados cerrados
+            if x == 0 and y == 0:
+                p_xy *= (1.0 - (lambda_local * lambda_visita * rho))
+            elif x == 1 and y == 0:
+                p_xy *= (1.0 + (lambda_local * rho))
+            elif x == 0 and y == 1:
+                p_xy *= (1.0 + (lambda_visita * rho))
+            elif x == 1 and y == 1:
+                p_xy *= (1.0 - rho)
+                
+            p_xy = max(0.0, p_xy)
+            
+            # Acumuladores 1X2
+            if x > y:
+                prob_local += p_xy
+            elif x == y:
+                prob_empate += p_xy
+            else:
+                prob_visitante += p_xy
+                
+            # Totales y BTTS
+            if (x + y) > 2.5:
+                prob_over_25 += p_xy
+            else:
+                prob_under_25 += p_xy
+                
+            if x > 0 and y > 0:
+                prob_btts += p_xy
 
-    # Ponderaciones estrictas: Impulsamos Goles (Over) y 1X2 puro; castigamos Under y Doble Oportunidad
+    # Doble Oportunidad
+    prob_1x = prob_local + prob_empate
+    prob_x2 = prob_visitante + prob_empate
+    
+    cuota_1x = round(1.0 / max(0.05, prob_1x * 0.96), 2)
+    cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.96), 2)
+    cuota_btts = 1.85 if prob_btts > 0.5 else 2.10
+
+    # Retornamos el abanico completo sin penalizaciones falsas, puramente matemático
     mercados = [
-        {"mercado": "1X2 - Gana Local", "prob": p_l * 1.05, "cuota": cuota_local},
-        {"mercado": "1X2 - Empate", "prob": p_e * 1.02, "cuota": cuota_empate},
-        {"mercado": "1X2 - Gana Visitante", "prob": p_v * 1.05, "cuota": cuota_visita},
-        {"mercado": "Doble Oportunidad - 1X (Local o Empate)", "prob": prob_1x * 0.85, "cuota": cuota_1x}, # Castigo fuerte
-        {"mercado": "Doble Oportunidad - X2 (Visitante o Empate)", "prob": prob_x2 * 0.85, "cuota": cuota_x2}, # Castigo fuerte
-        {"mercado": "Goles - Over 2.5", "prob": prob_over_25 * 1.08, "cuota": cuota_over25}, # Impulso al Over
-        {"mercado": "Goles - Under 2.5", "prob": prob_under_25 * 0.75, "cuota": cuota_under25}, # Castigo severo al Under
-        {"mercado": "Goles - Over 1.5", "prob": prob_over_15 * 1.05, "cuota": cuota_over15},
-        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts * 1.05, "cuota": cuota_btts}
+        {"mercado": "1X2 - Gana Local", "prob": prob_local, "cuota": cuota_local},
+        {"mercado": "1X2 - Empate", "prob": prob_empate, "cuota": cuota_empate},
+        {"mercado": "1X2 - Gana Visitante", "prob": prob_visitante, "cuota": cuota_visita},
+        {"mercado": "Doble Oportunidad - 1X (Local o Empate)", "prob": prob_1x, "cuota": cuota_1x},
+        {"mercado": "Doble Oportunidad - X2 (Visitante o Empate)", "prob": prob_x2, "cuota": cuota_x2},
+        {"mercado": "Goles - Over 2.5", "prob": prob_over_25, "cuota": cuota_over25},
+        {"mercado": "Goles - Under 2.5", "prob": prob_under_25, "cuota": cuota_under25},
+        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": cuota_btts}
     ]
     return mercados
 
-def evaluar_partido_multimercado(partido, cuotas_mercado, mercados_enviados_recientes):
-    """Evalúa los mercados aplicando control de diversidad para evitar saturar con el mismo tipo de apuesta."""
+def evaluar_partido_multimercado(partido, cuotas_mercado):
     local = partido.get('homeTeam', {}).get('name', '')
     visitante = partido.get('awayTeam', {}).get('name', '')
     
@@ -226,7 +237,6 @@ def evaluar_partido_multimercado(partido, cuotas_mercado, mercados_enviados_reci
     cuota_visita = 3.30
     cuota_over25 = 1.90
     cuota_under25 = 1.90
-    cuota_over15 = 1.35
     
     if cuotas_encontradas:
         try:
@@ -248,33 +258,24 @@ def evaluar_partido_multimercado(partido, cuotas_mercado, mercados_enviados_reci
                                     cuota_over25 = outcome['price']
                                 else:
                                     cuota_under25 = outcome['price']
-                            elif outcome.get('point') == 1.5:
-                                if 'over' in outcome['name'].lower():
-                                    cuota_over15 = outcome['price']
         except Exception as e:
             print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
-    opciones = simular_mercados_anti_monopolio(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15)
+    opciones = modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # Filtro de máxima exigencia: EV > 7.0% y Stake Kelly > 0.8%
-        if ev > 0.07 and stake_k > 0.8:
-            # Control anti-monopolio: si este mercado ya domina las alertas recientes, lo ignoramos temporalmente
-            tipo_mercado = op["mercado"].split(" - ")[0] # Ej: "Goles", "1X2", "Doble Oportunidad"
-            if mercados_enviados_recientes.count(tipo_mercado) >= 2:
-                continue
-                
+        # Filtro cuantitativo profesional estricto: EV > 4.5% y Kelly > 0.5%
+        if ev > 0.045 and stake_k > 0.5:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
                 "cuota": op["cuota"],
                 "ev": ev * 100,
-                "stake_k": stake_k,
-                "tipo": tipo_mercado
+                "stake_k": stake_k
             })
             
     if mejores:
@@ -284,7 +285,7 @@ def evaluar_partido_multimercado(partido, cuotas_mercado, mercados_enviados_reci
     return None
 
 def main():
-    print("Iniciando motor cuantitativo francotirador (Anti-Monopolio y Alta Exigencia)...")
+    print("Iniciando motor cuantitativo con Modelo Bivariado Dixon-Coles...")
     
     partidos = consultar_partidos_hoy()
     if not partidos:
@@ -295,14 +296,13 @@ def main():
     
     alertas_enviadas = 0
     hoy_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-    mercados_enviados_recientes = []
     
     for partido in partidos:
         local = partido.get('homeTeam', {}).get('name', 'Local')
         visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
         competencia = partido.get('competition', {}).get('name', 'Liga Europea')
         
-        seleccion = evaluar_partido_multimercado(partido, cuotas_api, mercados_enviados_recientes)
+        seleccion = evaluar_partido_multimercado(partido, cuotas_api)
         
         if seleccion:
             prob_pct = seleccion['prob'] * 100
@@ -310,9 +310,6 @@ def main():
             cuota_val = seleccion['cuota']
             stake_val = seleccion['stake_k']
             mercado_val = seleccion['mercado']
-            
-            # Registramos el tipo de mercado para mantener diversidad
-            mercados_enviados_recientes.append(seleccion['tipo'])
             
             datos_pick = {
                 "fecha": hoy_str,
@@ -328,7 +325,7 @@ def main():
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
-                f"🎯 <b>ALERTA QUANT FRANCOTIRADOR</b> 🎯\n\n"
+                f"🧠 <b>MODELO DIXON-COLES VIP</b> 🧠\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
                 f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
@@ -341,8 +338,8 @@ def main():
             if exito:
                 alertas_enviadas += 1
                 
-    print(f"Proceso finalizado. Total de alertas selectivas enviadas y registradas: {alertas_enviadas}")
+    print(f"Proceso finalizado. Total de alertas procesadas: {alertas_enviadas}")
 
 if __name__ == "__main__":
     main()
-        
+                
