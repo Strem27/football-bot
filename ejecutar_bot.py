@@ -125,7 +125,11 @@ def poisson_prob(lmbda, k):
     except:
         return 0.0
 
-def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
+def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
+    """
+    Matriz bivariada con rango extendido (10x10) y normalización estricta 
+    para eliminar distorsiones de probabilidad en los marcadores.
+    """
     p_l = 1.0 / cuota_local
     p_e = 1.0 / cuota_empate
     p_v = 1.0 / cuota_visita
@@ -135,35 +139,51 @@ def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_
     
     implied_over = 1.0 / cuota_over25
     lambda_global = 2.4 + (implied_over * 0.8)
-    lambda_global = max(2.0, min(lambda_global, 3.4))
+    lambda_global = max(1.8, min(lambda_global, 3.6))
     
     suma_p = p_l + p_e + p_v
     lambda_local = lambda_global * (p_l / suma_p) * 1.03
     lambda_visita = lambda_global * (p_v / suma_p) * 0.97
     
+    # Matriz temporal de 10x10
+    matriz = [[0.0 for _ in range(10)] for _ in range(10)]
+    suma_total_prob = 0.0
+    rho = -0.08
+    
+    for x in range(10):
+        for y in range(10):
+            p_xy = poisson_prob(lambda_local, x) * poisson_prob(lambda_visita, y)
+            
+            # Ajuste analítico Dixon-Coles
+            if x == 0 and y == 0:
+                p_xy *= max(0.1, (1.0 - (lambda_local * lambda_visita * rho)))
+            elif x == 1 and y == 0:
+                p_xy *= (1.0 + (lambda_local * rho))
+            elif x == 0 and y == 1:
+                p_xy *= (1.0 + (lambda_visita * rho))
+            elif x == 1 and y == 1:
+                p_xy *= max(0.1, (1.0 - rho))
+                
+            p_xy = max(0.0, p_xy)
+            matriz[x][y] = p_xy
+            suma_total_prob += p_xy
+
+    # NORMALIZACIÓN MATEMÁTICA: Garantiza que la suma de toda la matriz sea exactamente 1.0
+    if suma_total_prob > 0:
+        for x in range(10):
+            for y in range(10):
+                matriz[x][y] /= suma_total_prob
+
     prob_local = 0.0
     prob_empate = 0.0
     prob_visitante = 0.0
     prob_over_25 = 0.0
     prob_under_25 = 0.0
     prob_btts = 0.0
-    
-    rho = -0.10
-    
-    for x in range(7):
-        for y in range(7):
-            p_xy = poisson_prob(lambda_local, x) * poisson_prob(lambda_visita, y)
-            
-            if x == 0 and y == 0:
-                p_xy *= (1.0 - (lambda_local * lambda_visita * rho))
-            elif x == 1 and y == 0:
-                p_xy *= (1.0 + (lambda_local * rho))
-            elif x == 0 and y == 1:
-                p_xy *= (1.0 + (lambda_visita * rho))
-            elif x == 1 and y == 1:
-                p_xy *= (1.0 - rho)
-                
-            p_xy = max(0.0, p_xy)
+
+    for x in range(10):
+        for y in range(10):
+            p_xy = matriz[x][y]
             
             if x > y:
                 prob_local += p_xy
@@ -207,14 +227,11 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     for evento in cuotas_mercado:
         home_ev = evento.get('home_team', '').lower()
         away_ev = evento.get('away_team', '').lower()
-        # Coincidencia parcial mejorada
         if (local.lower()[:4] in home_ev) or (visitante.lower()[:4] in away_ev):
             cuotas_encontradas = evento.get('bookmakers', [])
             break
             
-    # SI NO HAY CUOTAS REALES, NO INVENTAMOS NÚMEROS POR DEFECTO
     if not cuotas_encontradas:
-        print(f"[OMITIDO] No se encontraron cuotas reales para: {local} vs {visitante}")
         return None
 
     cuota_local = None
@@ -245,22 +262,18 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     except Exception as e:
         print(f"[ERROR PARSEO] {local} vs {visitante}: {e}")
 
-    # Validar que tengamos las cuotas completas antes de simular
     if not all([cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25]):
-        print(f"[INCOMPLETO] Faltan líneas de cuota clave para: {local} vs {visitante}")
         return None
 
-    print(f"[EVALUANDO REAL] {local} vs {visitante} | Cuotas: L={cuota_local} X={cuota_empate} V={cuota_visita} Ov2.5={cuota_over25}")
-
-    opciones = modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
+    opciones = modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # Filtro cuantitativo: EV > 4.0% y Kelly > 0.4%
-        if ev > 0.04 and stake_k > 0.4:
+        # Filtro cuantitativo profesional real y estricto: EV entre 2% y 15% (descartando anomalías falsas)
+        if 0.02 <= ev <= 0.15 and stake_k > 0.3:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -276,7 +289,7 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("=== INICIANDO MOTOR CUANTITATIVO CON LOGS DE DIAGNÓSTICO ===")
+    print("=== INICIANDO MOTOR CUANTITATIVO CON MATRIZ NORMALIZADA ===")
     
     partidos = consultar_partidos_hoy()
     if not partidos:
@@ -284,7 +297,6 @@ def main():
         return
         
     cuotas_api = consultar_cuotas_multi_liga()
-    print(f"[DEBUG] Total de eventos recopilados en The Odds API: {len(cuotas_api)}")
     
     alertas_enviadas = 0
     hoy_str = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -317,7 +329,7 @@ def main():
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
-                f"🧠 <b>MODELO DIXON-COLES VIP</b> 🧠\n\n"
+                f"🎯 <b>PICK QUANT VIP (NORMALIZADO)</b> 🎯\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
                 f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
@@ -334,4 +346,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
+    
