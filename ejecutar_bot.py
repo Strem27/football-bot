@@ -126,10 +126,6 @@ def poisson_prob(lmbda, k):
         return 0.0
 
 def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
-    """
-    Matriz bivariada con rango extendido (10x10) y normalización estricta 
-    para eliminar distorsiones de probabilidad en los marcadores.
-    """
     p_l = 1.0 / cuota_local
     p_e = 1.0 / cuota_empate
     p_v = 1.0 / cuota_visita
@@ -145,7 +141,6 @@ def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_
     lambda_local = lambda_global * (p_l / suma_p) * 1.03
     lambda_visita = lambda_global * (p_v / suma_p) * 0.97
     
-    # Matriz temporal de 10x10
     matriz = [[0.0 for _ in range(10)] for _ in range(10)]
     suma_total_prob = 0.0
     rho = -0.08
@@ -154,7 +149,6 @@ def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_
         for y in range(10):
             p_xy = poisson_prob(lambda_local, x) * poisson_prob(lambda_visita, y)
             
-            # Ajuste analítico Dixon-Coles
             if x == 0 and y == 0:
                 p_xy *= max(0.1, (1.0 - (lambda_local * lambda_visita * rho)))
             elif x == 1 and y == 0:
@@ -168,7 +162,6 @@ def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_
             matriz[x][y] = p_xy
             suma_total_prob += p_xy
 
-    # NORMALIZACIÓN MATEMÁTICA: Garantiza que la suma de toda la matriz sea exactamente 1.0
     if suma_total_prob > 0:
         for x in range(10):
             for y in range(10):
@@ -215,135 +208,5 @@ def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_
         {"mercado": "Doble Oportunidad - X2 (Visitante o Empate)", "prob": prob_x2, "cuota": cuota_x2},
         {"mercado": "Goles - Over 2.5", "prob": prob_over_25, "cuota": cuota_over25},
         {"mercado": "Goles - Under 2.5", "prob": prob_under_25, "cuota": cuota_under25},
-        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": cuota_btts}
-    ]
-    return mercados
-
-def evaluar_partido_multimercado(partido, cuotas_mercado):
-    local = partido.get('homeTeam', {}).get('name', '')
-    visitante = partido.get('awayTeam', {}).get('name', '')
-    
-    cuotas_encontradas = None
-    for evento in cuotas_mercado:
-        home_ev = evento.get('home_team', '').lower()
-        away_ev = evento.get('away_team', '').lower()
-        if (local.lower()[:4] in home_ev) or (visitante.lower()[:4] in away_ev):
-            cuotas_encontradas = evento.get('bookmakers', [])
-            break
-            
-    if not cuotas_encontradas:
-        return None
-
-    cuota_local = None
-    cuota_empate = None
-    cuota_visita = None
-    cuota_over25 = None
-    cuota_under25 = None
-    
-    try:
-        for bookmaker in cuotas_encontradas:
-            for m in bookmaker.get('markets', []):
-                if m['key'] == 'h2h':
-                    for outcome in m['outcomes']:
-                        name = outcome['name'].lower()
-                        if local.lower()[:4] in name:
-                            cuota_local = outcome['price']
-                        elif visitante.lower()[:4] in name:
-                            cuota_visita = outcome['price']
-                        else:
-                            cuota_empate = outcome['price']
-                elif m['key'] == 'totals':
-                    for outcome in m['outcomes']:
-                        if outcome.get('point') == 2.5:
-                            if 'over' in outcome['name'].lower():
-                                cuota_over25 = outcome['price']
-                            else:
-                                cuota_under25 = outcome['price']
-    except Exception as e:
-        print(f"[ERROR PARSEO] {local} vs {visitante}: {e}")
-
-    if not all([cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25]):
-        return None
-
-    opciones = modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
-    
-    mejores = []
-    for op in opciones:
-        ev = (op["prob"] * op["cuota"]) - 1.0
-        stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
-        
-        # Filtro cuantitativo profesional real y estricto: EV entre 2% y 15% (descartando anomalías falsas)
-        if 0.02 <= ev <= 0.15 and stake_k > 0.3:
-            mejores.append({
-                "mercado": op["mercado"],
-                "prob": op["prob"],
-                "cuota": op["cuota"],
-                "ev": ev * 100,
-                "stake_k": stake_k
-            })
-            
-    if mejores:
-        mejores.sort(key=lambda x: x["stake_k"], reverse=True)
-        return mejores[0]
-        
-    return None
-
-def main():
-    print("=== INICIANDO MOTOR CUANTITATIVO CON MATRIZ NORMALIZADA ===")
-    
-    partidos = consultar_partidos_hoy()
-    if not partidos:
-        print("No se obtuvieron partidos de Football-Data.")
-        return
-        
-    cuotas_api = consultar_cuotas_multi_liga()
-    
-    alertas_enviadas = 0
-    hoy_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-    
-    for partido in partidos:
-        local = partido.get('homeTeam', {}).get('name', 'Local')
-        visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
-        competencia = partido.get('competition', {}).get('name', 'Liga Europea')
-        
-        seleccion = evaluar_partido_multimercado(partido, cuotas_api)
-        
-        if seleccion:
-            prob_pct = seleccion['prob'] * 100
-            ev_val = seleccion['ev']
-            cuota_val = seleccion['cuota']
-            stake_val = seleccion['stake_k']
-            mercado_val = seleccion['mercado']
-            
-            datos_pick = {
-                "fecha": hoy_str,
-                "liga": competencia,
-                "partido": f"{local} vs {visitante}",
-                "mercado": mercado_val,
-                "cuota": cuota_val,
-                "prob": seleccion['prob'],
-                "ev": ev_val,
-                "stake_k": stake_val
-            }
-            
-            registrar_en_csv(datos_pick)
-            
-            mensaje_alerta = (
-                f"🎯 <b>PICK QUANT VIP (NORMALIZADO)</b> 🎯\n\n"
-                f"🏆 <b>Liga:</b> {competencia}\n"
-                f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
-                f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
-                f"📊 <b>Prob. Modelo:</b> {prob_pct:.1f}% | <b>EV:</b> +{ev_val:.1f}%\n"
-                f"💰 <b>Cuota Real:</b> {cuota_val}\n"
-                f"🛡️ <b>Stake Kelly (0.25):</b> <b>{stake_val:.2f}% de la Banca</b>\n"
-            )
-            
-            exito = enviar_telegram(mensaje_alerta)
-            if exito:
-                alertas_enviadas += 1
-                
-    print(f"=== PROCESO FINALIZADO: {alertas_enviadas} ALERTAS ENVIADAS ===")
-
-if __name__ == "__main__":
-    main()
-    
+        {"
+                    
