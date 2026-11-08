@@ -34,7 +34,6 @@ def registrar_en_csv(datos_pick):
                 f"{datos_pick['stake_k']:.2f}%",
                 "PENDIENTE"
             ])
-        print(f"Pick registrado en el ledger CSV: {datos_pick['partido']} - {datos_pick['mercado']}")
     except Exception as e:
         print(f"Error escribiendo en el CSV: {e}")
 
@@ -75,12 +74,10 @@ def consultar_partidos_hoy():
             response = requests.get(url, headers=headers, params=params, timeout=12)
             if response.status_code == 200:
                 matches = response.json().get("matches", [])
-                print(f"Partidos encontrados en Football-Data: {len(matches)}")
+                print(f"[DEBUG] Partidos encontrados en Football-Data: {len(matches)}")
                 return matches
-            else:
-                print(f"Error Football-Data (Intento {intento+1}): {response.status_code}")
         except Exception as e:
-            print(f"Excepción en Football-Data (Intento {intento+1}): {e}")
+            print(f"[ERROR] Football-Data (Intento {intento+1}): {e}")
         time.sleep(2)
     return []
 
@@ -102,21 +99,16 @@ def consultar_cuotas_multi_liga():
             "markets": "h2h,totals",
             "oddsFormat": "decimal"
         }
-        exito = False
-        for intento in range(2):
-            try:
-                response = requests.get(url, params=params, timeout=15)
-                if response.status_code == 200:
-                    eventos_totales.extend(response.json())
-                    exito = True
-                    break
-                else:
-                    print(f"Aviso cuotas {deporte} (Código {response.status_code}), reintentando...")
-            except Exception as e:
-                print(f"Timeout o error en cuotas para {deporte} (Intento {intento+1}): {e}")
-            time.sleep(2)
-        if not exito:
-            print(f"No se pudieron obtener cuotas para {deporte} en este ciclo, saltando...")
+        try:
+            response = requests.get(url, params=params, timeout=15)
+            if response.status_code == 200:
+                datos = response.json()
+                eventos_totales.extend(datos)
+                print(f"[DEBUG] Cuotas obtenidas para {deporte}: {len(datos)} eventos")
+        except Exception as e:
+            print(f"[ERROR] Cuotas {deporte}: {e}")
+        time.sleep(1)
+        
     return eventos_totales
 
 def calcular_kelly(probabilidad_modelo, cuota_decimal, fraccion=0.25):
@@ -134,19 +126,13 @@ def poisson_prob(lmbda, k):
         return 0.0
 
 def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
-    """
-    Simulación profesional con matriz bivariada ajustada para corregir 
-    el sesgo natural de los marcadores bajos en Poisson puro.
-    """
     p_l = 1.0 / cuota_local
     p_e = 1.0 / cuota_empate
     p_v = 1.0 / cuota_visita
     
-    # Normalizamos el margen de las casas (vig)
     total_h2h = p_l + p_e + p_v
     p_l, p_e, p_v = p_l/total_h2h, p_e/total_h2h, p_v/total_h2h
     
-    # Derivación de goles esperados (Lambda)
     implied_over = 1.0 / cuota_over25
     lambda_global = 2.4 + (implied_over * 0.8)
     lambda_global = max(2.0, min(lambda_global, 3.4))
@@ -155,7 +141,6 @@ def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_
     lambda_local = lambda_global * (p_l / suma_p) * 1.03
     lambda_visita = lambda_global * (p_v / suma_p) * 0.97
     
-    # Acumuladores de probabilidad exacta
     prob_local = 0.0
     prob_empate = 0.0
     prob_visitante = 0.0
@@ -163,14 +148,12 @@ def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_
     prob_under_25 = 0.0
     prob_btts = 0.0
     
-    # Matriz bivariada de 7x7 con factor de corrección Dixon-Coles para 0-0 y 1-1
-    rho = -0.10 # Factor de corrección estándar para baja anotación
+    rho = -0.10
     
     for x in range(7):
         for y in range(7):
             p_xy = poisson_prob(lambda_local, x) * poisson_prob(lambda_visita, y)
             
-            # Ajuste analítico de correlación para resultados cerrados
             if x == 0 and y == 0:
                 p_xy *= (1.0 - (lambda_local * lambda_visita * rho))
             elif x == 1 and y == 0:
@@ -182,7 +165,6 @@ def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_
                 
             p_xy = max(0.0, p_xy)
             
-            # Acumuladores 1X2
             if x > y:
                 prob_local += p_xy
             elif x == y:
@@ -190,7 +172,6 @@ def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_
             else:
                 prob_visitante += p_xy
                 
-            # Totales y BTTS
             if (x + y) > 2.5:
                 prob_over_25 += p_xy
             else:
@@ -199,7 +180,6 @@ def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_
             if x > 0 and y > 0:
                 prob_btts += p_xy
 
-    # Doble Oportunidad
     prob_1x = prob_local + prob_empate
     prob_x2 = prob_visitante + prob_empate
     
@@ -207,7 +187,6 @@ def modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_
     cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.96), 2)
     cuota_btts = 1.85 if prob_btts > 0.5 else 2.10
 
-    # Retornamos el abanico completo sin penalizaciones falsas, puramente matemático
     mercados = [
         {"mercado": "1X2 - Gana Local", "prob": prob_local, "cuota": cuota_local},
         {"mercado": "1X2 - Empate", "prob": prob_empate, "cuota": cuota_empate},
@@ -228,38 +207,50 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     for evento in cuotas_mercado:
         home_ev = evento.get('home_team', '').lower()
         away_ev = evento.get('away_team', '').lower()
-        if (local.lower()[:5] in home_ev) or (visitante.lower()[:5] in away_ev):
+        # Coincidencia parcial mejorada
+        if (local.lower()[:4] in home_ev) or (visitante.lower()[:4] in away_ev):
             cuotas_encontradas = evento.get('bookmakers', [])
             break
             
-    cuota_local = 2.10
-    cuota_empate = 3.40
-    cuota_visita = 3.30
-    cuota_over25 = 1.90
-    cuota_under25 = 1.90
+    # SI NO HAY CUOTAS REALES, NO INVENTAMOS NÚMEROS POR DEFECTO
+    if not cuotas_encontradas:
+        print(f"[OMITIDO] No se encontraron cuotas reales para: {local} vs {visitante}")
+        return None
+
+    cuota_local = None
+    cuota_empate = None
+    cuota_visita = None
+    cuota_over25 = None
+    cuota_under25 = None
     
-    if cuotas_encontradas:
-        try:
-            for bookmaker in cuotas_encontradas:
-                for m in bookmaker.get('markets', []):
-                    if m['key'] == 'h2h':
-                        for outcome in m['outcomes']:
-                            name = outcome['name'].lower()
-                            if local.lower()[:4] in name:
-                                cuota_local = outcome['price']
-                            elif visitante.lower()[:4] in name:
-                                cuota_visita = outcome['price']
+    try:
+        for bookmaker in cuotas_encontradas:
+            for m in bookmaker.get('markets', []):
+                if m['key'] == 'h2h':
+                    for outcome in m['outcomes']:
+                        name = outcome['name'].lower()
+                        if local.lower()[:4] in name:
+                            cuota_local = outcome['price']
+                        elif visitante.lower()[:4] in name:
+                            cuota_visita = outcome['price']
+                        else:
+                            cuota_empate = outcome['price']
+                elif m['key'] == 'totals':
+                    for outcome in m['outcomes']:
+                        if outcome.get('point') == 2.5:
+                            if 'over' in outcome['name'].lower():
+                                cuota_over25 = outcome['price']
                             else:
-                                cuota_empate = outcome['price']
-                    elif m['key'] == 'totals':
-                        for outcome in m['outcomes']:
-                            if outcome.get('point') == 2.5:
-                                if 'over' in outcome['name'].lower():
-                                    cuota_over25 = outcome['price']
-                                else:
-                                    cuota_under25 = outcome['price']
-        except Exception as e:
-            print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
+                                cuota_under25 = outcome['price']
+    except Exception as e:
+        print(f"[ERROR PARSEO] {local} vs {visitante}: {e}")
+
+    # Validar que tengamos las cuotas completas antes de simular
+    if not all([cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25]):
+        print(f"[INCOMPLETO] Faltan líneas de cuota clave para: {local} vs {visitante}")
+        return None
+
+    print(f"[EVALUANDO REAL] {local} vs {visitante} | Cuotas: L={cuota_local} X={cuota_empate} V={cuota_visita} Ov2.5={cuota_over25}")
 
     opciones = modelo_bivariado_dixon_coles(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
     
@@ -268,8 +259,8 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # Filtro cuantitativo profesional estricto: EV > 4.5% y Kelly > 0.5%
-        if ev > 0.045 and stake_k > 0.5:
+        # Filtro cuantitativo: EV > 4.0% y Kelly > 0.4%
+        if ev > 0.04 and stake_k > 0.4:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -285,14 +276,15 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("Iniciando motor cuantitativo con Modelo Bivariado Dixon-Coles...")
+    print("=== INICIANDO MOTOR CUANTITATIVO CON LOGS DE DIAGNÓSTICO ===")
     
     partidos = consultar_partidos_hoy()
     if not partidos:
-        print("No se obtuvieron partidos de Football-Data. Saliendo de manera segura.")
+        print("No se obtuvieron partidos de Football-Data.")
         return
         
     cuotas_api = consultar_cuotas_multi_liga()
+    print(f"[DEBUG] Total de eventos recopilados en The Odds API: {len(cuotas_api)}")
     
     alertas_enviadas = 0
     hoy_str = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -338,8 +330,8 @@ def main():
             if exito:
                 alertas_enviadas += 1
                 
-    print(f"Proceso finalizado. Total de alertas procesadas: {alertas_enviadas}")
+    print(f"=== PROCESO FINALIZADO: {alertas_enviadas} ALERTAS ENVIADAS ===")
 
 if __name__ == "__main__":
     main()
-                
+            
