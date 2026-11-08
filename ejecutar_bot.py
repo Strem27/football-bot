@@ -179,4 +179,91 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     cuota_under25 = 1.90
     cuota_over15 = 1.35
     
-    if cuotas_
+    if cuotas_encontradas:
+        try:
+            for bookmaker in cuotas_encontradas:
+                for m in bookmaker.get('markets', []):
+                    if m['key'] == 'h2h':
+                        for outcome in m['outcomes']:
+                            name = outcome['name'].lower()
+                            if local.lower()[:4] in name:
+                                cuota_local = outcome['price']
+                            elif visitante.lower()[:4] in name:
+                                cuota_visita = outcome['price']
+                            else:
+                                cuota_empate = outcome['price']
+                    elif m['key'] == 'totals':
+                        for outcome in m['outcomes']:
+                            if outcome.get('point') == 2.5:
+                                if 'over' in outcome['name'].lower():
+                                    cuota_over25 = outcome['price']
+                                else:
+                                    cuota_under25 = outcome['price']
+                            elif outcome.get('point') == 1.5:
+                                if 'over' in outcome['name'].lower():
+                                    cuota_over15 = outcome['price']
+        except Exception as e:
+            print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
+
+    opciones = simular_mercados_equilibrados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15)
+    
+    mejores = []
+    for op in opciones:
+        ev = (op["prob"] * op["cuota"]) - 1.0
+        stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
+        
+        if ev > 0.025 and stake_k > 0.25:
+            mejores.append({
+                "mercado": op["mercado"],
+                "prob": op["prob"],
+                "cuota": op["cuota"],
+                "ev": ev * 100,
+                "stake_k": stake_k
+            })
+            
+    if mejores:
+        mejores.sort(key=lambda x: x["stake_k"], reverse=True)
+        return mejores[0]
+        
+    return None
+
+def main():
+    print("Iniciando motor cuantitativo multimercado calibrado...")
+    
+    partidos = consultar_partidos_hoy()
+    cuotas_api = consultar_cuotas_multi_liga()
+    
+    alertas_enviadas = 0
+    
+    for partido in partidos:
+        local = partido.get('homeTeam', {}).get('name', 'Local')
+        visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
+        competencia = partido.get('competition', {}).get('name', 'Liga Europea')
+        
+        seleccion = evaluar_partido_multimercado(partido, cuotas_api)
+        
+        if seleccion:
+            prob_pct = seleccion['prob'] * 100
+            ev_val = seleccion['ev']
+            cuota_val = seleccion['cuota']
+            stake_val = seleccion['stake_k']
+            mercado_val = seleccion['mercado']
+            
+            mensaje_alerta = (
+                f"🎯 <b>PICK QUANT MULTIMERCADO</b> 🎯\n\n"
+                f"🏆 <b>Liga:</b> {competencia}\n"
+                f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
+                f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
+                f"📊 <b>Prob. Modelo:</b> {prob_pct:.1f}% | <b>EV:</b> +{ev_val:.1f}%\n"
+                f"💰 <b>Cuota Real:</b> {cuota_val}\n"
+                f"🛡️ <b>Stake Kelly (0.25):</b> <b>{stake_val:.2f}% de la Banca</b>\n"
+            )
+            
+            exito = enviar_telegram(mensaje_alerta)
+            if exito:
+                alertas_enviadas += 1
+                
+    print(f"Proceso finalizado. Total de alertas individuales enviadas: {alertas_enviadas}")
+
+if __name__ == "__main__":
+    main()
