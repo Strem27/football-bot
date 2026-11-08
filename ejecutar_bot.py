@@ -104,15 +104,15 @@ def poisson_prob(lmbda, k):
     except:
         return 0.0
 
-def simular_mercados_equilibrados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15):
-    """Modelo de Poisson con calibración simétrica para evitar sesgos hacia los goles bajo."""
+def simular_mercados_diversificados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15):
+    """Modelo de Poisson con factor de diversidad para evitar monopolio del Under 2.5."""
     p_l = 1.0 / cuota_local
     p_e = 1.0 / cuota_empate
     p_v = 1.0 / cuota_visita
     
     implied_p_over = 1.0 / cuota_over25
-    lambda_global = 2.3 + (implied_p_over * 1.2)
-    lambda_global = max(1.9, min(lambda_global, 3.5))
+    lambda_global = 2.4 + (implied_p_over * 1.0)
+    lambda_global = max(2.0, min(lambda_global, 3.4))
     
     suma_p_h2h = p_l + p_e + p_v
     lambda_local = lambda_global * (p_l / suma_p_h2h) * 1.03
@@ -142,18 +142,19 @@ def simular_mercados_equilibrados(cuota_local, cuota_empate, cuota_visita, cuota
     prob_1x = p_l + p_e
     prob_x2 = p_v + p_e
     
-    cuota_1x = round(1.0 / max(0.05, prob_1x * 0.96), 2)
-    cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.96), 2)
-    cuota_btts = 1.85 if prob_btts > 0.48 else 2.05
+    cuota_1x = round(1.0 / max(0.05, prob_1x * 0.95), 2)
+    cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.95), 2)
+    cuota_btts = 1.82 if prob_btts > 0.5 else 2.05
 
+    # Aplicamos una ligera ponderación neutral para incentivar 1X2 y Doble Oportunidad
     mercados = [
-        {"mercado": "1X2 - Gana Local", "prob": p_l, "cuota": cuota_local},
-        {"mercado": "1X2 - Empate", "prob": p_e, "cuota": cuota_empate},
-        {"mercado": "1X2 - Gana Visitante", "prob": p_v, "cuota": cuota_visita},
-        {"mercado": "Doble Oportunidad - 1X (Local o Empate)", "prob": prob_1x, "cuota": cuota_1x},
-        {"mercado": "Doble Oportunidad - X2 (Visitante o Empate)", "prob": prob_x2, "cuota": cuota_x2},
+        {"mercado": "1X2 - Gana Local", "prob": p_l * 1.04, "cuota": cuota_local},
+        {"mercado": "1X2 - Empate", "prob": p_e * 1.02, "cuota": cuota_empate},
+        {"mercado": "1X2 - Gana Visitante", "prob": p_v * 1.04, "cuota": cuota_visita},
+        {"mercado": "Doble Oportunidad - 1X (Local o Empate)", "prob": prob_1x * 1.02, "cuota": cuota_1x},
+        {"mercado": "Doble Oportunidad - X2 (Visitante o Empate)", "prob": prob_x2 * 1.02, "cuota": cuota_x2},
         {"mercado": "Goles - Over 2.5", "prob": prob_over_25, "cuota": cuota_over25},
-        {"mercado": "Goles - Under 2.5", "prob": prob_under_25, "cuota": cuota_under25},
+        {"mercado": "Goles - Under 2.5", "prob": prob_under_25 * 0.94, "cuota": cuota_under25}, # Factor anti-monopolio Under
         {"mercado": "Goles - Over 1.5", "prob": prob_over_15, "cuota": cuota_over15},
         {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": cuota_btts}
     ]
@@ -205,14 +206,14 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
         except Exception as e:
             print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
-    opciones = simular_mercados_equilibrados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15)
+    opciones = simular_mercados_diversificados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15)
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        if ev > 0.025 and stake_k > 0.25:
+        if ev > 0.02 and stake_k > 0.2:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -228,7 +229,7 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("Iniciando motor cuantitativo multimercado calibrado...")
+    print("Iniciando motor cuantitativo multimercado diversificado...")
     
     partidos = consultar_partidos_hoy()
     cuotas_api = consultar_cuotas_multi_liga()
@@ -267,3 +268,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+            
