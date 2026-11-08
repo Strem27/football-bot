@@ -104,28 +104,21 @@ def poisson_prob(lmbda, k):
     except:
         return 0.0
 
-def simular_todos_los_mercados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15):
-    """
-    Simula mediante Poisson la matriz completa del partido y deriva 
-    probabilidades para 1X2, Doble Oportunidad, Over/Under y BTTS.
-    """
+def simular_mercados_equilibrados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15):
+    """Modelo de Poisson con calibración simétrica para evitar sesgos hacia los goles bajo."""
     p_l = 1.0 / cuota_local
     p_e = 1.0 / cuota_empate
     p_v = 1.0 / cuota_visita
     
-    # Estimación de lambda global basada en la línea de 2.5 goles
-    if cuota_under25 < cuota_over25:
-        lambda_global = 2.15 + (max(0, cuota_over25 - cuota_under25) * 0.15)
-    else:
-        lambda_global = 2.75 + (max(0, cuota_under25 - cuota_over25) * 0.15)
-    
-    lambda_global = max(1.7, min(lambda_global, 3.6))
+    # Derivamos el total de goles esperados de manera equilibrada
+    implied_p_over = 1.0 / cuota_over25
+    lambda_global = 2.3 + (implied_p_over * 1.2)
+    lambda_global = max(1.9, min(lambda_global, 3.5))
     
     suma_p_h2h = p_l + p_e + p_v
-    lambda_local = lambda_global * (p_l / suma_p_h2h) * 1.04
-    lambda_visita = lambda_global * (p_v / suma_p_h2h) * 0.96
+    lambda_local = lambda_global * (p_l / suma_p_h2h) * 1.03
+    lambda_visita = lambda_global * (p_v / suma_p_h2h) * 0.97
     
-    # Acumuladores de simulación
     prob_over_25 = 0.0
     prob_under_25 = 0.0
     prob_over_15 = 0.0
@@ -147,18 +140,14 @@ def simular_todos_los_mercados(cuota_local, cuota_empate, cuota_visita, cuota_ov
             if g_local > 0 and g_visita > 0:
                 prob_btts += p_match
 
-    # Probabilidades para Doble Oportunidad
     prob_1x = p_l + p_e
     prob_x2 = p_v + p_e
-    prob_12 = p_l + p_v
-
-    # Cuotas estimadas para mercados derivados si no vienen directos
+    
     cuota_1x = round(1.0 / max(0.05, prob_1x * 0.96), 2)
     cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.96), 2)
-    cuota_btts = 1.85 if prob_btts > 0.5 else 1.95
+    cuota_btts = 1.85 if prob_btts > 0.48 else 2.05
 
-    # Abanico completo de mercados evaluados con rigor matemático
-    mercados_evaluados = [
+    mercados = [
         {"mercado": "1X2 - Gana Local", "prob": p_l, "cuota": cuota_local},
         {"mercado": "1X2 - Empate", "prob": p_e, "cuota": cuota_empate},
         {"mercado": "1X2 - Gana Visitante", "prob": p_v, "cuota": cuota_visita},
@@ -169,17 +158,18 @@ def simular_todos_los_mercados(cuota_local, cuota_empate, cuota_visita, cuota_ov
         {"mercado": "Goles - Over 1.5", "prob": prob_over_15, "cuota": cuota_over15},
         {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": cuota_btts}
     ]
-    
-    return mercados_evaluados
+    return mercados
 
 def evaluar_partido_multimercado(partido, cuotas_mercado):
-    """Evalúa todo el abanico de mercados y selecciona la oportunidad óptima."""
-    local = partido.get('homeTeam', {}).get('name', 'Local')
-    visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
+    """Busca el partido usando coincidencia parcial de nombres y evalúa todos los mercados."""
+    local = partido.get('homeTeam', {}).get('name', '')
+    visitante = partido.get('awayTeam', {}).get('name', '')
     
     cuotas_encontradas = None
     for evento in cuotas_mercado:
-        if local.lower() in evento.get('home_team', '').lower() or visitante.lower() in evento.get('away_team', '').lower():
+        home_ev = evento.get('home_team', '').lower()
+        away_ev = evento.get('away_team', '').lower()
+        if (local.lower()[:5] in home_ev) or (visitante.lower()[:5] in away_ev):
             cuotas_encontradas = evento.get('bookmakers', [])
             break
             
@@ -188,42 +178,43 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     cuota_visita = 3.30
     cuota_over25 = 1.90
     cuota_under25 = 1.90
-    cuota_over15 = 1.30
+    cuota_over15 = 1.35
     
     if cuotas_encontradas:
         try:
-            markets = cuotas_encontradas[0].get('markets', [])
-            for m in markets:
-                if m['key'] == 'h2h':
-                    for outcome in m['outcomes']:
-                        if outcome['name'].lower() == local.lower():
-                            cuota_local = outcome['price']
-                        elif outcome['name'].lower() == visitante.lower():
-                            cuota_visita = outcome['price']
-                        else:
-                            cuota_empate = outcome['price']
-                elif m['key'] == 'totals':
-                    for outcome in m['outcomes']:
-                        if outcome.get('point') == 2.5:
-                            if outcome['name'].lower() == 'over':
-                                cuota_over25 = outcome['price']
+            for bookmaker in cuotas_encontradas:
+                for m in bookmaker.get('markets', []):
+                    if m['key'] == 'h2h':
+                        for outcome in m['outcomes']:
+                            name = outcome['name'].lower()
+                            if local.lower()[:4] in name:
+                                cuota_local = outcome['price']
+                            elif visitante.lower()[:4] in name:
+                                cuota_visita = outcome['price']
                             else:
-                                cuota_under25 = outcome['price']
-                        elif outcome.get('point') == 1.5:
-                            if outcome['name'].lower() == 'over':
-                                cuota_over15 = outcome['price']
+                                cuota_empate = outcome['price']
+                    elif m['key'] == 'totals':
+                        for outcome in m['outcomes']:
+                            if outcome.get('point') == 2.5:
+                                if 'over' in outcome['name'].lower():
+                                    cuota_over25 = outcome['price']
+                                else:
+                                    cuota_under25 = outcome['price']
+                            elif outcome.get('point') == 1.5:
+                                if 'over' in outcome['name'].lower():
+                                    cuota_over15 = outcome['price']
         except Exception as e:
             print(f"Error parseando cuotas para {local} vs {visitante}: {e}")
 
-    opciones = simular_todos_los_mercados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15)
+    opciones = simular_mercados_equilibrados(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25, cuota_over15)
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # Filtro de valor positivo real: EV > 2% y Stake Kelly > 0.2%
-        if ev > 0.02 and stake_k > 0.2:
+        # Filtro de valor estricto pero abierto a todos los mercados
+        if ev > 0.025 and stake_k > 0.25:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -233,14 +224,13 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
             })
             
     if mejores:
-        # Selecciona estrictamente la mejor opción entre todos los mercados evaluados
         mejores.sort(key=lambda x: x["stake_k"], reverse=True)
         return mejores[0]
         
     return None
 
 def main():
-    print("Iniciando motor analítico con análisis multimercado completo...")
+    print("Iniciando motor cuantitativo multimercado calibrado...")
     
     partidos = consultar_partidos_hoy()
     cuotas_api = consultar_cuotas_multi_liga()
@@ -261,6 +251,19 @@ def main():
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
                 f"📌 <b>Selección Óptima:</b> {seleccion['mercado']}\n"
                 f"📊 <b>Prob. Modelo:</b> {seleccion['prob']*100:.1f}% | <b>EV:</b> +{seleccion['ev']:.1f}%\n"
+                f"💰 <b>Cuota Real:</b> {seleccion['cuota']}\n"
+                f"🛡️ <b>Stake Kelly (0.25):</b> <b>{seleccion['stake_k']:.2f}% de la Banca</b>\n"
+            )
+            
+            exito = enviar_telegram(mensaje_alerta)
+            if exito:
+                alertas_enviadas += 1
+                
+    print(f"Proceso finalizado. Total de alertas individuales enviadas: {alertas_enviadas}")
+
+if __name__ == "__main__":
+    main()
+        00:.1f}% | <b>EV:</b> +{seleccion['ev']:.1f}%\n"
                 f"💰 <b>Cuota Real:</b> {seleccion['cuota']}\n"
                 f"🛡️ <b>Stake Kelly (0.25):</b> <b>{seleccion['stake_k']:.2f}% de la Banca</b>\n"
             )
