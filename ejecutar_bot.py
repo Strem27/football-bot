@@ -56,14 +56,11 @@ def enviar_telegram(mensaje):
         return False
 
 def consultar_partidos_inmediatos():
-    """Consulta partidos estrictamente en una ventana cercana (hoy y mañana) para evitar saltos largos."""
     hoy = datetime.now().strftime('%Y-%m-%d')
     futuro = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
     
     url = "https://api.football-data.org/v4/matches"
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-    
-    # Añadimos Copa del Rey (CDR) y UEFA Nations League (UNL)
     competencias = "PL,PD,SD,SA,BL1,FL1,CLI,ELC,CDR,UNL" 
     
     params = {
@@ -77,7 +74,7 @@ def consultar_partidos_inmediatos():
             response = requests.get(url, headers=headers, params=params, timeout=12)
             if response.status_code == 200:
                 matches = response.json().get("matches", [])
-                print(f"[DEBUG] Partidos encontrados en Football-Data (Ventana cercana): {len(matches)}")
+                print(f"[DEBUG] Partidos encontrados en Football-Data: {len(matches)}")
                 return matches
         except Exception as e:
             print(f"[ERROR] Football-Data (Intento {intento+1}): {e}")
@@ -85,7 +82,6 @@ def consultar_partidos_inmediatos():
     return []
 
 def consultar_cuotas_multi_liga():
-    """Consulta de cuotas incluyendo ligas europeas, Copa del Rey y Nations League."""
     deportes = [
         "soccer_epl", 
         "soccer_spain_la_liga", 
@@ -135,7 +131,7 @@ def poisson_prob(lmbda, k):
     except:
         return 0.0
 
-def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
+def modelo_bivariado_desacoplado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
     p_l = 1.0 / cuota_local
     p_e = 1.0 / cuota_empate
     p_v = 1.0 / cuota_visita
@@ -144,16 +140,16 @@ def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_
     p_l, p_e, p_v = p_l/total_h2h, p_e/total_h2h, p_v/total_h2h
     
     implied_over = 1.0 / cuota_over25
-    lambda_global = 2.4 + (implied_over * 0.8)
-    lambda_global = max(1.8, min(lambda_global, 3.6))
+    lambda_global = 2.5 + (implied_over * 0.7)
+    lambda_global = max(2.0, min(lambda_global, 3.8))
     
     suma_p = p_l + p_e + p_v
-    lambda_local = lambda_global * (p_l / suma_p) * 1.03
-    lambda_visita = lambda_global * (p_v / suma_p) * 0.97
+    lambda_local = lambda_global * (p_l / suma_p) * 1.04
+    lambda_visita = lambda_global * (p_v / suma_p) * 0.96
     
     matriz = [[0.0 for _ in range(10)] for _ in range(10)]
     suma_total_prob = 0.0
-    rho = -0.08
+    rho = -0.07
     
     for x in range(10):
         for y in range(10):
@@ -203,13 +199,16 @@ def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_
             if x > 0 and y > 0:
                 prob_btts += p_xy
 
+    # Estimación de cuota justa de mercado para BTTS basada en probabilidad inversa calibrada
+    cuota_btts_justa = round(1.0 / max(0.1, prob_btts * 0.95), 2)
+
     mercados = [
         {"mercado": "1X2 - Gana Local", "prob": prob_local, "cuota": cuota_local},
         {"mercado": "1X2 - Empate", "prob": prob_empate, "cuota": cuota_empate},
         {"mercado": "1X2 - Gana Visitante", "prob": prob_visitante, "cuota": cuota_visita},
         {"mercado": "Goles - Over 2.5", "prob": prob_over_25, "cuota": cuota_over25},
         {"mercado": "Goles - Under 2.5", "prob": prob_under_25, "cuota": cuota_under25},
-        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": 1.90 if prob_btts > 0.5 else 2.05}
+        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": cuota_btts_justa}
     ]
     return mercados
 
@@ -259,14 +258,27 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     if not all([cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25]):
         return None
 
-    opciones = modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
+    opciones = modelo_bivariado_desacoplado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        if op["cuota"] >= 1.55 and 0.05 <= ev <= 0.18 and stake_k > 0.4:
+        # UMBRALES DESACOPLADOS POR FAMILIA DE MERCADO
+        es_mercado_goles = "Goles" in op["mercado"] or "Anotan" in op["mercado"]
+        
+        # Goles / BTTS: Cuota >= 1.50 y EV flexible >= 3.5%
+        if es_mercado_goles and op["cuota"] >= 1.50 and 0.035 <= ev <= 0.20 and stake_k > 0.3:
+            mejores.append({
+                "mercado": op["mercado"],
+                "prob": op["prob"],
+                "cuota": op["cuota"],
+                "ev": ev * 100,
+                "stake_k": stake_k
+            })
+        # 1X2 / Resto: Cuota >= 1.55 y EV estricto >= 5.0%
+        elif not es_mercado_goles and op["cuota"] >= 1.55 and 0.05 <= ev <= 0.18 and stake_k > 0.4:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -282,14 +294,12 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("=== INICIANDO MOTOR CUANTITATIVO (VENTANA INMEDIATA + NATIONS LEAGUE / COPA DEL REY) ===")
+    print("=== INICIANDO MOTOR CUANTITATIVO CON UMBRALES DESACOPLADOS ===")
     
     partidos = consultar_partidos_inmediatos()
     cuotas_api = consultar_cuotas_multi_liga()
     
-    # RESPALDO DE SEGURIDAD ESTRICTO: Solo tomamos de The Odds API los eventos que tengan cuotas vivas inmediatas
     if not partidos and cuotas_api:
-        print("[AVISO] Football-Data sin partidos inmediatos. Verificando eventos activos en The Odds API...")
         for evento in cuotas_api:
             partidos.append({
                 "homeTeam": {"name": evento.get("home_team", "")},
@@ -298,7 +308,7 @@ def main():
             })
 
     if not partidos:
-        print("No hay partidos programados para hoy ni mañana en las ligas monitorizadas.")
+        print("No hay partidos inmediatos disponibles para analizar.")
         return
         
     alertas_enviadas = 0
@@ -332,7 +342,7 @@ def main():
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
-                f"🏆 <b>PICK QUANT INMEDIATO</b> 🏆\n\n"
+                f"🧠 <b>PICK QUANT DESACOPLADO</b> 🧠\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
                 f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
