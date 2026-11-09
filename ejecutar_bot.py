@@ -55,9 +55,10 @@ def enviar_telegram(mensaje):
         print(f"Error enviando mensaje a Telegram: {e}")
         return False
 
-def consultar_partidos_inmediatos():
+def consultar_partidos_estrictos_hoy():
+    """Consulta partidos estrictamente para hoy y mañana."""
     hoy = datetime.now().strftime('%Y-%m-%d')
-    futuro = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
+    mañana = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     
     url = "https://api.football-data.org/v4/matches"
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
@@ -65,7 +66,7 @@ def consultar_partidos_inmediatos():
     
     params = {
         "dateFrom": hoy,
-        "dateTo": futuro,
+        "dateTo": mañana,
         "competitions": competencias
     }
     
@@ -74,7 +75,7 @@ def consultar_partidos_inmediatos():
             response = requests.get(url, headers=headers, params=params, timeout=12)
             if response.status_code == 200:
                 matches = response.json().get("matches", [])
-                print(f"[DEBUG] Partidos encontrados en Football-Data: {len(matches)}")
+                print(f"[DEBUG] Partidos estrictos (Hoy/Mañana): {len(matches)}")
                 return matches
         except Exception as e:
             print(f"[ERROR] Football-Data (Intento {intento+1}): {e}")
@@ -109,8 +110,19 @@ def consultar_cuotas_multi_liga():
             response = requests.get(url, params=params, timeout=15)
             if response.status_code == 200:
                 datos = response.json()
-                eventos_totales.extend(datos)
-                print(f"[DEBUG] Cuotas obtenidas para {deporte}: {len(datos)} eventos")
+                # Filtramos para descartar eventos cuyas cuotas o fechas sean lejanas si la API lo trae
+                for ev in datos:
+                    commence_time = ev.get("commence_time", "")
+                    # Si el evento ocurre dentro de las próximas 48 horas, lo aceptamos
+                    if commence_time:
+                        try:
+                            t_evento = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+                            t_limite = datetime.now(t_evento.tzinfo) + timedelta(days=2)
+                            if t_evento <= t_limite:
+                                eventos_totales.append(ev)
+                        except:
+                            eventos_totales.append(ev)
+                print(f"[DEBUG] Cuotas filtradas para {deporte}: {len(datos)} eventos")
         except Exception as e:
             print(f"[ERROR] Cuotas {deporte}: {e}")
         time.sleep(1)
@@ -199,7 +211,6 @@ def modelo_bivariado_desacoplado(cuota_local, cuota_empate, cuota_visita, cuota_
             if x > 0 and y > 0:
                 prob_btts += p_xy
 
-    # Estimación de cuota justa de mercado para BTTS basada en probabilidad inversa calibrada
     cuota_btts_justa = round(1.0 / max(0.1, prob_btts * 0.95), 2)
 
     mercados = [
@@ -265,10 +276,8 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # UMBRALES DESACOPLADOS POR FAMILIA DE MERCADO
         es_mercado_goles = "Goles" in op["mercado"] or "Anotan" in op["mercado"]
         
-        # Goles / BTTS: Cuota >= 1.50 y EV flexible >= 3.5%
         if es_mercado_goles and op["cuota"] >= 1.50 and 0.035 <= ev <= 0.20 and stake_k > 0.3:
             mejores.append({
                 "mercado": op["mercado"],
@@ -277,7 +286,6 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
                 "ev": ev * 100,
                 "stake_k": stake_k
             })
-        # 1X2 / Resto: Cuota >= 1.55 y EV estricto >= 5.0%
         elif not es_mercado_goles and op["cuota"] >= 1.55 and 0.05 <= ev <= 0.18 and stake_k > 0.4:
             mejores.append({
                 "mercado": op["mercado"],
@@ -294,21 +302,22 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("=== INICIANDO MOTOR CUANTITATIVO CON UMBRALES DESACOPLADOS ===")
+    print("=== INICIANDO MOTOR CUANTITATIVO (FILTRO ESTRICTO HOY/MAÑANA) ===")
     
-    partidos = consultar_partidos_inmediatos()
+    partidos = consultar_partidos_estrictos_hoy()
     cuotas_api = consultar_cuotas_multi_liga()
     
+    # Si Football-Data no trae nada para hoy/mañana, construimos la lista únicamente con los eventos de The Odds API que ya filtramos por fecha cercana
     if not partidos and cuotas_api:
         for evento in cuotas_api:
             partidos.append({
                 "homeTeam": {"name": evento.get("home_team", "")},
                 "awayTeam": {"name": evento.get("away_team", "")},
-                "competition": {"name": evento.get("sport_title", "Torneo Internacional")}
+                "competition": {"name": evento.get("sport_title", "Torneo Inmediato")}
             })
 
     if not partidos:
-        print("No hay partidos inmediatos disponibles para analizar.")
+        print("No hay partidos programados para hoy ni mañana. El bot se detiene limpiamente.")
         return
         
     alertas_enviadas = 0
@@ -342,7 +351,7 @@ def main():
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
-                f"🧠 <b>PICK QUANT DESACOPLADO</b> 🧠\n\n"
+                f"🚨 <b>PICK QUANT INMEDIATO (HOY/MAÑANA)</b> 🚨\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
                 f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
