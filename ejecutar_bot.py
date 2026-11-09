@@ -61,7 +61,9 @@ def consultar_partidos_hoy():
     
     url = "https://api.football-data.org/v4/matches"
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-    competencias = "PL,PD,SA,BL1,FL1"
+    
+    # Ampliamos las competencias en Football-Data (España 1 y 2, Inglaterra FA Cup, etc.)
+    competencias = "PL,PD,SD,SA,BL1,FL1,CLI,ELC" 
     
     params = {
         "dateFrom": hoy,
@@ -82,12 +84,17 @@ def consultar_partidos_hoy():
     return []
 
 def consultar_cuotas_multi_liga():
+    # Ampliamos el radar de The Odds API con las nuevas ligas solicitadas
     deportes = [
         "soccer_epl", 
         "soccer_spain_la_liga", 
+        "soccer_spain_segunda_division",
         "soccer_italy_serie_a", 
         "soccer_germany_bundesliga", 
-        "soccer_france_ligue_one"
+        "soccer_france_ligue_one",
+        "soccer_colombia_primera_a",
+        "soccer_norway_eliteserien",
+        "soccer_romania_liga_i"
     ]
     eventos_totales = []
     
@@ -95,7 +102,7 @@ def consultar_cuotas_multi_liga():
         url = f"https://api.the-odds-api.com/v4/sports/{deporte}/odds/"
         params = {
             "apiKey": ODDS_API_KEY,
-            "regions": "eu",
+            "regions": "eu,us,uk",
             "markets": "h2h,totals",
             "oddsFormat": "decimal"
         }
@@ -106,7 +113,7 @@ def consultar_cuotas_multi_liga():
                 eventos_totales.extend(datos)
                 print(f"[DEBUG] Cuotas obtenidas para {deporte}: {len(datos)} eventos")
         except Exception as e:
-            print(f"[ERROR] Cuotas {deporte}: {e}")
+            print(f"[ERROR] Cuotas {deporte} (posible inactividad temporal o sin cuotas activas): {e}")
         time.sleep(1)
         
     return eventos_totales
@@ -193,22 +200,13 @@ def modelo_bivariado_normalizado(cuota_local, cuota_empate, cuota_visita, cuota_
             if x > 0 and y > 0:
                 prob_btts += p_xy
 
-    prob_1x = prob_local + prob_empate
-    prob_x2 = prob_visitante + prob_empate
-    
-    cuota_1x = round(1.0 / max(0.05, prob_1x * 0.96), 2)
-    cuota_x2 = round(1.0 / max(0.05, prob_x2 * 0.96), 2)
-    cuota_btts = 1.85 if prob_btts > 0.5 else 2.10
-
     mercados = [
         {"mercado": "1X2 - Gana Local", "prob": prob_local, "cuota": cuota_local},
         {"mercado": "1X2 - Empate", "prob": prob_empate, "cuota": cuota_empate},
         {"mercado": "1X2 - Gana Visitante", "prob": prob_visitante, "cuota": cuota_visita},
-        {"mercado": "Doble Oportunidad - 1X (Local o Empate)", "prob": prob_1x, "cuota": cuota_1x},
-        {"mercado": "Doble Oportunidad - X2 (Visitante o Empate)", "prob": prob_x2, "cuota": cuota_x2},
         {"mercado": "Goles - Over 2.5", "prob": prob_over_25, "cuota": cuota_over25},
         {"mercado": "Goles - Under 2.5", "prob": prob_under_25, "cuota": cuota_under25},
-        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": cuota_btts}
+        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": 1.90 if prob_btts > 0.5 else 2.05}
     ]
     return mercados
 
@@ -265,7 +263,6 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        # FILTRO FRONTERA DE VALOR: Cuota Mínima >= 1.55 y EV Mínimo >= +5.0%
         if op["cuota"] >= 1.55 and 0.05 <= ev <= 0.18 and stake_k > 0.4:
             mejores.append({
                 "mercado": op["mercado"],
@@ -282,11 +279,11 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("=== INICIANDO MOTOR CUANTITATIVO MID/HIGH ODDS (CUOTA >= 1.55) ===")
+    print("=== INICIANDO MOTOR CUANTITATIVO MULTI-LIGA EXPANDIDO ===")
     
     partidos = consultar_partidos_hoy()
     if not partidos:
-        print("No se obtuvieron partidos de Football-Data.")
+        print("No se obtuvieron partidos en las ligas seleccionadas para hoy.")
         return
         
     cuotas_api = consultar_cuotas_multi_liga()
@@ -297,7 +294,7 @@ def main():
     for partido in partidos:
         local = partido.get('homeTeam', {}).get('name', 'Local')
         visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
-        competencia = partido.get('competition', {}).get('name', 'Liga Europea')
+        competencia = partido.get('competition', {}).get('name', 'Liga Global')
         
         seleccion = evaluar_partido_multimercado(partido, cuotas_api)
         
@@ -322,7 +319,7 @@ def main():
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
-                f"🎯 <b>PICK QUANT VIP (VALOR ALTO)</b> 🎯\n\n"
+                f"🌍 <b>PICK QUANT MULTI-LIGA</b> 🌍\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
                 f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
@@ -335,8 +332,7 @@ def main():
             if exito:
                 alertas_enviadas += 1
                 
-    print(f"=== PROCESO FINALIZADO: {alertas_enviadas} ALERTAS DE VALOR ALTO ENVIADAS ===")
+    print(f"=== PROCESO MULTI-LIGA FINALIZADO: {alertas_enviadas} ALERTAS ENVIADAS ===")
 
 if __name__ == "__main__":
     main()
-                    
