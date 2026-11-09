@@ -55,14 +55,16 @@ def enviar_telegram(mensaje):
         print(f"Error enviando mensaje a Telegram: {e}")
         return False
 
-def consultar_partidos_ampliados():
-    """Consulta partidos en un rango extendido de 5 días para evitar días vacíos."""
+def consultar_partidos_inmediatos():
+    """Consulta partidos estrictamente en una ventana cercana (hoy y mañana) para evitar saltos largos."""
     hoy = datetime.now().strftime('%Y-%m-%d')
-    futuro = (datetime.now() + timedelta(days=5)).strftime('%Y-%m-%d')
+    futuro = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
     
     url = "https://api.football-data.org/v4/matches"
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-    competencias = "PL,PD,SD,SA,BL1,FL1,CLI,ELC" 
+    
+    # Añadimos Copa del Rey (CDR) y UEFA Nations League (UNL)
+    competencias = "PL,PD,SD,SA,BL1,FL1,CLI,ELC,CDR,UNL" 
     
     params = {
         "dateFrom": hoy,
@@ -75,7 +77,7 @@ def consultar_partidos_ampliados():
             response = requests.get(url, headers=headers, params=params, timeout=12)
             if response.status_code == 200:
                 matches = response.json().get("matches", [])
-                print(f"[DEBUG] Partidos encontrados en Football-Data (5 días): {len(matches)}")
+                print(f"[DEBUG] Partidos encontrados en Football-Data (Ventana cercana): {len(matches)}")
                 return matches
         except Exception as e:
             print(f"[ERROR] Football-Data (Intento {intento+1}): {e}")
@@ -83,14 +85,16 @@ def consultar_partidos_ampliados():
     return []
 
 def consultar_cuotas_multi_liga():
-    """Consulta de cuotas en múltiples mercados internacionales y de ascenso disponibles."""
+    """Consulta de cuotas incluyendo ligas europeas, Copa del Rey y Nations League."""
     deportes = [
         "soccer_epl", 
         "soccer_spain_la_liga", 
         "soccer_spain_segunda_division",
+        "soccer_spain_copa_del_rey",
         "soccer_italy_serie_a", 
         "soccer_germany_bundesliga", 
         "soccer_france_ligue_one",
+        "soccer_uefa_nations_league",
         "soccer_colombia_primera_a",
         "soccer_norway_eliteserien",
         "soccer_romania_liga_i"
@@ -278,23 +282,23 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("=== INICIANDO MOTOR CUANTITATIVO HÍBRIDO AMPLIADO (5 DÍAS) ===")
+    print("=== INICIANDO MOTOR CUANTITATIVO (VENTANA INMEDIATA + NATIONS LEAGUE / COPA DEL REY) ===")
     
-    partidos = consultar_partidos_ampliados()
+    partidos = consultar_partidos_inmediatos()
     cuotas_api = consultar_cuotas_multi_liga()
     
-    # RESPALDO DE SEGURIDAD: Si Football-Data no trae partidos, extraemos directamente los partidos desde The Odds API
+    # RESPALDO DE SEGURIDAD ESTRICTO: Solo tomamos de The Odds API los eventos que tengan cuotas vivas inmediatas
     if not partidos and cuotas_api:
-        print("[AVISO] Football-Data sin partidos en ventana de 5 días. Generando eventos desde The Odds API...")
+        print("[AVISO] Football-Data sin partidos inmediatos. Verificando eventos activos en The Odds API...")
         for evento in cuotas_api:
             partidos.append({
                 "homeTeam": {"name": evento.get("home_team", "")},
                 "awayTeam": {"name": evento.get("away_team", "")},
-                "competition": {"name": evento.get("sport_title", "Liga Internacional")}
+                "competition": {"name": evento.get("sport_title", "Torneo Internacional")}
             })
 
     if not partidos:
-        print("No se encontraron partidos activos ni en Football-Data ni en The Odds API.")
+        print("No hay partidos programados para hoy ni mañana en las ligas monitorizadas.")
         return
         
     alertas_enviadas = 0
@@ -328,7 +332,7 @@ def main():
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
-                f"🌍 <b>PICK QUANT HÍBRIDO VIP</b> 🌍\n\n"
+                f"🏆 <b>PICK QUANT INMEDIATO</b> 🏆\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
                 f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
@@ -341,7 +345,7 @@ def main():
             if exito:
                 alertas_enviadas += 1
                 
-    print(f"=== PROCESO HÍBRIDO FINALIZADO: {alertas_enviadas} ALERTAS ENVIADAS ===")
+    print(f"=== PROCESO FINALIZADO: {alertas_enviadas} ALERTAS ENVIADAS ===")
 
 if __name__ == "__main__":
     main()
