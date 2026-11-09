@@ -55,19 +55,18 @@ def enviar_telegram(mensaje):
         print(f"Error enviando mensaje a Telegram: {e}")
         return False
 
-def consultar_partidos_hoy():
+def consultar_partidos_ampliados():
+    """Consulta partidos en un rango extendido de 5 días para evitar días vacíos."""
     hoy = datetime.now().strftime('%Y-%m-%d')
-    mañana = (datetime.now() + timedelta(days=2)).strftime('%Y-%m-%d')
+    futuro = (datetime.now() + timedelta(days=5)).strftime('%Y-%m-%d')
     
     url = "https://api.football-data.org/v4/matches"
     headers = {"X-Auth-Token": FOOTBALL_DATA_KEY}
-    
-    # Ampliamos las competencias en Football-Data (España 1 y 2, Inglaterra FA Cup, etc.)
     competencias = "PL,PD,SD,SA,BL1,FL1,CLI,ELC" 
     
     params = {
         "dateFrom": hoy,
-        "dateTo": mañana,
+        "dateTo": futuro,
         "competitions": competencias
     }
     
@@ -76,7 +75,7 @@ def consultar_partidos_hoy():
             response = requests.get(url, headers=headers, params=params, timeout=12)
             if response.status_code == 200:
                 matches = response.json().get("matches", [])
-                print(f"[DEBUG] Partidos encontrados en Football-Data: {len(matches)}")
+                print(f"[DEBUG] Partidos encontrados en Football-Data (5 días): {len(matches)}")
                 return matches
         except Exception as e:
             print(f"[ERROR] Football-Data (Intento {intento+1}): {e}")
@@ -84,7 +83,7 @@ def consultar_partidos_hoy():
     return []
 
 def consultar_cuotas_multi_liga():
-    # Ampliamos el radar de The Odds API con las nuevas ligas solicitadas
+    """Consulta de cuotas en múltiples mercados internacionales y de ascenso disponibles."""
     deportes = [
         "soccer_epl", 
         "soccer_spain_la_liga", 
@@ -113,7 +112,7 @@ def consultar_cuotas_multi_liga():
                 eventos_totales.extend(datos)
                 print(f"[DEBUG] Cuotas obtenidas para {deporte}: {len(datos)} eventos")
         except Exception as e:
-            print(f"[ERROR] Cuotas {deporte} (posible inactividad temporal o sin cuotas activas): {e}")
+            print(f"[ERROR] Cuotas {deporte}: {e}")
         time.sleep(1)
         
     return eventos_totales
@@ -279,15 +278,25 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("=== INICIANDO MOTOR CUANTITATIVO MULTI-LIGA EXPANDIDO ===")
+    print("=== INICIANDO MOTOR CUANTITATIVO HÍBRIDO AMPLIADO (5 DÍAS) ===")
     
-    partidos = consultar_partidos_hoy()
-    if not partidos:
-        print("No se obtuvieron partidos en las ligas seleccionadas para hoy.")
-        return
-        
+    partidos = consultar_partidos_ampliados()
     cuotas_api = consultar_cuotas_multi_liga()
     
+    # RESPALDO DE SEGURIDAD: Si Football-Data no trae partidos, extraemos directamente los partidos desde The Odds API
+    if not partidos and cuotas_api:
+        print("[AVISO] Football-Data sin partidos en ventana de 5 días. Generando eventos desde The Odds API...")
+        for evento in cuotas_api:
+            partidos.append({
+                "homeTeam": {"name": evento.get("home_team", "")},
+                "awayTeam": {"name": evento.get("away_team", "")},
+                "competition": {"name": evento.get("sport_title", "Liga Internacional")}
+            })
+
+    if not partidos:
+        print("No se encontraron partidos activos ni en Football-Data ni en The Odds API.")
+        return
+        
     alertas_enviadas = 0
     hoy_str = datetime.now().strftime('%Y-%m-%d %H:%M')
     
@@ -319,7 +328,7 @@ def main():
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
-                f"🌍 <b>PICK QUANT MULTI-LIGA</b> 🌍\n\n"
+                f"🌍 <b>PICK QUANT HÍBRIDO VIP</b> 🌍\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
                 f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
                 f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
@@ -332,7 +341,7 @@ def main():
             if exito:
                 alertas_enviadas += 1
                 
-    print(f"=== PROCESO MULTI-LIGA FINALIZADO: {alertas_enviadas} ALERTAS ENVIADAS ===")
+    print(f"=== PROCESO HÍBRIDO FINALIZADO: {alertas_enviadas} ALERTAS ENVIADAS ===")
 
 if __name__ == "__main__":
     main()
