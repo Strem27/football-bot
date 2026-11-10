@@ -36,15 +36,14 @@ BASE = "https://api.the-odds-api.com/v4"
 ARCHIVO_CSV = "historial_picks.csv"
 
 LIGAS = [
-    "soccer_epl", "soccer_spain_la_liga", "soccer_spain_segunda_division",
-    "soccer_spain_copa_del_rey", "soccer_italy_serie_a", "soccer_germany_bundesliga",
-    "soccer_france_ligue_one", "soccer_uefa_nations_league", "soccer_colombia_primera_a",
-    "soccer_norway_eliteserien", "soccer_romania_liga_i",
+    "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a", "soccer_germany_bundesliga",
+    "soccer_france_ligue_one", "soccer_uefa_champs_league", "soccer_uefa_nations_league",
+    "soccer_efl_champ",
 ]
 REGIONES = "eu,uk"          # Pinnacle viene en "eu". Costo = regiones x mercados por llamada
 CASA_REFERENCIA = "pinnacle"
 LINEA = 2.5
-VENTANA_HORAS = 48
+VENTANA_HORAS = 24
 
 MIN_CASAS = 5               # mínimo de casas con la línea 2.5 para confiar en la prob. justa
 MAX_DISPERSION = 0.035      # si las casas no se ponen de acuerdo (desv. est. de P(Over)), no se juega
@@ -419,4 +418,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-  
+      
