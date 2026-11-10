@@ -22,6 +22,7 @@ import html
 import os
 import statistics
 import sys
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -54,6 +55,8 @@ EV_MAX = 0.12               # un EV mayor casi siempre es error de datos, no una
 KELLY_FRACCION = 0.25
 STAKE_MIN = 0.25            # % de banca
 STAKE_MAX = 1.50            # % de banca
+
+CREDITOS_MINIMOS = 10      # si quedan menos créditos, el bot no consulta más
 
 ZONA = timezone(timedelta(hours=-5))   # hora que se muestra en Telegram (Colombia)
 
@@ -95,6 +98,10 @@ def calcular_kelly(prob, cuota, fraccion=KELLY_FRACCION):
     return max(0.0, full * fraccion * 100.0)
 
 
+RESTANTES = None            # créditos restantes según la API
+DESCARTES = Counter()       # por qué se descartan los partidos
+
+
 # ------------------------------ DATOS (API) ----------------------------------
 def _iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -105,6 +112,10 @@ def _parse_dt(txt):
 
 
 def _cuota_restante(resp):
+    global RESTANTES
+    txt = resp.headers.get("x-requests-remaining", "")
+    if txt.strip().isdigit():
+        RESTANTES = int(txt)
     print(f"[API] créditos usados: {resp.headers.get('x-requests-used', '?')} | "
           f"restantes: {resp.headers.get('x-requests-remaining', '?')}")
 
@@ -124,6 +135,23 @@ def deportes_activos():
     return [l for l in LIGAS if l in activos]
 
 
+def listar_eventos(sport, desde, hasta):
+    """Partidos de la liga en la ventana. Este endpoint no debería gastar créditos
+    (verifícalo en el log: los créditos restantes no deben bajar tras esta llamada)."""
+    params = {"apiKey": ODDS_API_KEY, "dateFormat": "iso",
+              "commenceTimeFrom": _iso(desde), "commenceTimeTo": _iso(hasta)}
+    try:
+        r = requests.get(f"{BASE}/sports/{sport}/events/", params=params, timeout=15)
+        if r.status_code != 200:
+            print(f"[AVISO] eventos {sport}: HTTP {r.status_code}")
+            return None          # None = no se pudo saber; se consulta igual
+        _cuota_restante(r)
+        return r.json()
+    except Exception as e:
+        print(f"[ERROR] eventos {sport}: {e}")
+        return None
+
+
 def consultar_cuotas(sport, desde, hasta):
     params = {
         "apiKey": ODDS_API_KEY, "regions": REGIONES, "markets": "totals",
@@ -135,8 +163,13 @@ def consultar_cuotas(sport, desde, hasta):
     except Exception as e:
         print(f"[ERROR] {sport}: {e}")
         return []
-    if r.status_code in (401, 429):
-        print(f"[ERROR] {sport}: HTTP {r.status_code} (clave inválida o sin créditos)")
+    if r.status_code == 429:
+        global RESTANTES
+        RESTANTES = 0
+        print(f"[AVISO] {sport}: sin créditos de The Odds API")
+        return []
+    if r.status_code == 401:
+        print("[ERROR] ODDS_API_KEY inválida")
         raise SystemExit(1)
     if r.status_code != 200:
         print(f"[ERROR] {sport}: HTTP {r.status_code}")
@@ -187,12 +220,14 @@ def analizar_evento(evento):
     """Devuelve el mejor pick del evento o None."""
     casas = extraer_totales(evento)
     if len(casas) < MIN_CASAS:
+        DESCARTES["pocas casas con línea 2.5"] += 1
         return None
 
     p_over_por_casa = {k: quitar_margen_potencia([v["over"], v["under"]])[0]
                        for k, v in casas.items()}
     valores = list(p_over_por_casa.values())
     if statistics.pstdev(valores) > MAX_DISPERSION:
+        DESCARTES["casas en desacuerdo"] += 1
         return None
 
     if CASA_REFERENCIA in p_over_por_casa:
@@ -215,7 +250,10 @@ def analizar_evento(evento):
                 "cuota_justa": 1.0 / prob, "ev": ev * 100.0, "stake": stake,
                 "casa": casas[casa_key]["titulo"], "referencia": ref, "n_casas": len(casas),
             })
-    return max(candidatos, key=lambda c: c["ev"]) if candidatos else None
+    if not candidatos:
+        DESCARTES["sin valor (EV fuera de 4%-12% / cuota / stake)"] += 1
+        return None
+    return max(candidatos, key=lambda c: c["ev"])
 
 
 # ------------------------------ CSV ------------------------------------------
@@ -318,8 +356,19 @@ def escanear():
     hasta = ahora + timedelta(hours=VENTANA_HORAS)
     ya = {f["ID_Evento"] for f in leer_csv()}
     enviados = 0
+    vistos = 0
     for sport in deportes_activos():
+        if RESTANTES is not None and RESTANTES <= CREDITOS_MINIMOS:
+            print(f"[AVISO] Quedan {RESTANTES} créditos: me detengo para no agotarlos.")
+            break
+        eventos = listar_eventos(sport, ahora, hasta)
+        if eventos is not None:
+            nuevos = [e for e in eventos if e["id"] not in ya]
+            if not nuevos:
+                print(f"[SKIP] {sport}: sin partidos nuevos en {VENTANA_HORAS} h (0 créditos gastados)")
+                continue
         for ev in consultar_cuotas(sport, ahora, hasta):
+            vistos += 1
             if ev["id"] in ya:
                 continue
             inicio = _parse_dt(ev["commence_time"])
@@ -352,6 +401,7 @@ def escanear():
             )
             if enviar_telegram(msg):
                 enviados += 1
+    print(f"[DIAGNÓSTICO] partidos analizados: {vistos} | descartes: {dict(DESCARTES)}")
     print(f"=== FIN: {enviados} alertas enviadas ===")
 
 
@@ -369,4 +419,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+  
