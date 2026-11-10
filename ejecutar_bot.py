@@ -56,7 +56,6 @@ def enviar_telegram(mensaje):
         return False
 
 def consultar_partidos_estrictos_hoy():
-    """Consulta partidos estrictamente para hoy y mañana."""
     hoy = datetime.now().strftime('%Y-%m-%d')
     mañana = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     
@@ -110,10 +109,8 @@ def consultar_cuotas_multi_liga():
             response = requests.get(url, params=params, timeout=15)
             if response.status_code == 200:
                 datos = response.json()
-                # Filtramos para descartar eventos cuyas cuotas o fechas sean lejanas si la API lo trae
                 for ev in datos:
                     commence_time = ev.get("commence_time", "")
-                    # Si el evento ocurre dentro de las próximas 48 horas, lo aceptamos
                     if commence_time:
                         try:
                             t_evento = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
@@ -143,32 +140,43 @@ def poisson_prob(lmbda, k):
     except:
         return 0.0
 
-def modelo_bivariado_desacoplado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
-    p_l = 1.0 / cuota_local
-    p_e = 1.0 / cuota_empate
-    p_v = 1.0 / cuota_visita
+def modelo_bivariado_pro(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25):
+    # 1. EXTRACCIÓN DE PROBABILIDADES LIBRES DE MARGEN (VIG REMOVAL - POWER METHOD)
+    raw_l = 1.0 / cuota_local
+    raw_e = 1.0 / cuota_empate
+    raw_v = 1.0 / cuota_visita
     
-    total_h2h = p_l + p_e + p_v
-    p_l, p_e, p_v = p_l/total_h2h, p_e/total_h2h, p_v/total_h2h
+    # Buscamos el factor de potencia 'k' para neutralizar el overround de la casa
+    k_factor = 1.0
+    for _ in range(5):
+        suma_p = (raw_l**k_factor) + (raw_e**k_factor) + (raw_v**k_factor)
+        if abs(suma_p - 1.0) < 1e-4:
+            break
+        k_factor += (suma_p - 1.0) * 0.5
+        
+    p_l = raw_l ** k_factor
+    p_e = raw_e ** k_factor
+    p_v = raw_v ** k_factor
     
     implied_over = 1.0 / cuota_over25
-    lambda_global = 2.5 + (implied_over * 0.7)
-    lambda_global = max(2.0, min(lambda_global, 3.8))
+    lambda_global = 2.45 + (implied_over * 0.75)
+    lambda_global = max(2.0, min(lambda_global, 3.7))
     
-    suma_p = p_l + p_e + p_v
-    lambda_local = lambda_global * (p_l / suma_p) * 1.04
-    lambda_visita = lambda_global * (p_v / suma_p) * 0.96
+    suma_p_h2h = p_l + p_e + p_v
+    lambda_local = lambda_global * (p_l / suma_p_h2h) * 1.035
+    lambda_visita = lambda_global * (p_v / suma_p_h2h) * 0.965
     
     matriz = [[0.0 for _ in range(10)] for _ in range(10)]
     suma_total_prob = 0.0
-    rho = -0.07
+    rho = -0.075
     
+    # 2. MATRIZ BIVARIADA CON CORRECCIÓN POISSON ZIP (INFLACIÓN DE CEROS)
     for x in range(10):
         for y in range(10):
             p_xy = poisson_prob(lambda_local, x) * poisson_prob(lambda_visita, y)
             
             if x == 0 and y == 0:
-                p_xy *= max(0.1, (1.0 - (lambda_local * lambda_visita * rho)))
+                p_xy *= max(0.12, (1.0 - (lambda_local * lambda_visita * rho))) * 1.08 # Ajuste ZIP 0-0
             elif x == 1 and y == 0:
                 p_xy *= (1.0 + (lambda_local * rho))
             elif x == 0 and y == 1:
@@ -185,45 +193,24 @@ def modelo_bivariado_desacoplado(cuota_local, cuota_empate, cuota_visita, cuota_
             for y in range(10):
                 matriz[x][y] /= suma_total_prob
 
-    prob_local = 0.0
-    prob_empate = 0.0
-    prob_visitante = 0.0
     prob_over_25 = 0.0
     prob_under_25 = 0.0
-    prob_btts = 0.0
 
     for x in range(10):
         for y in range(10):
             p_xy = matriz[x][y]
-            
-            if x > y:
-                prob_local += p_xy
-            elif x == y:
-                prob_empate += p_xy
-            else:
-                prob_visitante += p_xy
-                
             if (x + y) > 2.5:
                 prob_over_25 += p_xy
             else:
                 prob_under_25 += p_xy
-                
-            if x > 0 and y > 0:
-                prob_btts += p_xy
-
-    cuota_btts_justa = round(1.0 / max(0.1, prob_btts * 0.95), 2)
 
     mercados = [
-        {"mercado": "1X2 - Gana Local", "prob": prob_local, "cuota": cuota_local},
-        {"mercado": "1X2 - Empate", "prob": prob_empate, "cuota": cuota_empate},
-        {"mercado": "1X2 - Gana Visitante", "prob": prob_visitante, "cuota": cuota_visita},
         {"mercado": "Goles - Over 2.5", "prob": prob_over_25, "cuota": cuota_over25},
-        {"mercado": "Goles - Under 2.5", "prob": prob_under_25, "cuota": cuota_under25},
-        {"mercado": "Ambos Anotan (BTTS - Sí)", "prob": prob_btts, "cuota": cuota_btts_justa}
+        {"mercado": "Goles - Under 2.5", "prob": prob_under_25, "cuota": cuota_under25}
     ]
     return mercados
 
-def evaluar_partido_multimercado(partido, cuotas_mercado):
+def evaluar_partido_goles(partido, cuotas_mercado):
     local = partido.get('homeTeam', {}).get('name', '')
     visitante = partido.get('awayTeam', {}).get('name', '')
     
@@ -269,24 +256,15 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     if not all([cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25]):
         return None
 
-    opciones = modelo_bivariado_desacoplado(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
+    opciones = modelo_bivariado_pro(cuota_local, cuota_empate, cuota_visita, cuota_over25, cuota_under25)
     
     mejores = []
     for op in opciones:
         ev = (op["prob"] * op["cuota"]) - 1.0
         stake_k = calcular_kelly(op["prob"], op["cuota"], fraccion=0.25)
         
-        es_mercado_goles = "Goles" in op["mercado"] or "Anotan" in op["mercado"]
-        
-        if es_mercado_goles and op["cuota"] >= 1.50 and 0.035 <= ev <= 0.20 and stake_k > 0.3:
-            mejores.append({
-                "mercado": op["mercado"],
-                "prob": op["prob"],
-                "cuota": op["cuota"],
-                "ev": ev * 100,
-                "stake_k": stake_k
-            })
-        elif not es_mercado_goles and op["cuota"] >= 1.55 and 0.05 <= ev <= 0.18 and stake_k > 0.4:
+        # Filtro cuantitativo pro para Over/Under 2.5
+        if op["cuota"] >= 1.50 and 0.035 <= ev <= 0.20 and stake_k > 0.3:
             mejores.append({
                 "mercado": op["mercado"],
                 "prob": op["prob"],
@@ -302,12 +280,11 @@ def evaluar_partido_multimercado(partido, cuotas_mercado):
     return None
 
 def main():
-    print("=== INICIANDO MOTOR CUANTITATIVO (FILTRO ESTRICTO HOY/MAÑANA) ===")
+    print("=== INICIANDO MOTOR CUANTITATIVO PRO (VIG REMOVAL + POISSON ZIP) ===")
     
     partidos = consultar_partidos_estrictos_hoy()
     cuotas_api = consultar_cuotas_multi_liga()
     
-    # Si Football-Data no trae nada para hoy/mañana, construimos la lista únicamente con los eventos de The Odds API que ya filtramos por fecha cercana
     if not partidos and cuotas_api:
         for evento in cuotas_api:
             partidos.append({
@@ -328,7 +305,7 @@ def main():
         visitante = partido.get('awayTeam', {}).get('name', 'Visitante')
         competencia = partido.get('competition', {}).get('name', 'Liga Global')
         
-        seleccion = evaluar_partido_multimercado(partido, cuotas_api)
+        seleccion = evaluar_partido_goles(partido, cuotas_api)
         
         if seleccion:
             prob_pct = seleccion['prob'] * 100
@@ -351,10 +328,10 @@ def main():
             registrar_en_csv(datos_pick)
             
             mensaje_alerta = (
-                f"🚨 <b>PICK QUANT INMEDIATO (HOY/MAÑANA)</b> 🚨\n\n"
+                f"⚡ <b>PICK PRO (GOLES)</b> ⚡\n\n"
                 f"🏆 <b>Liga:</b> {competencia}\n"
-                f"⚽ <b>Partido:</b> {local} vs {visitante}\n"
-                f"📌 <b>Selección Óptima:</b> {mercado_val}\n"
+                f"🏟️ <b>Partido:</b> {local} vs {visitante}\n"
+                f"📌 <b>Selección:</b> {mercado_val}\n"
                 f"📊 <b>Prob. Modelo:</b> {prob_pct:.1f}% | <b>EV:</b> +{ev_val:.1f}%\n"
                 f"💰 <b>Cuota Real:</b> {cuota_val}\n"
                 f"🛡️ <b>Stake Kelly (0.25):</b> <b>{stake_val:.2f}% de la Banca</b>\n"
@@ -364,7 +341,7 @@ def main():
             if exito:
                 alertas_enviadas += 1
                 
-    print(f"=== PROCESO FINALIZADO: {alertas_enviadas} ALERTAS ENVIADAS ===")
+    print(f"=== PROCESO FINALIZADO: {alertas_enviadas} ALERTAS PRO ENVIADAS ===")
 
 if __name__ == "__main__":
     main()
