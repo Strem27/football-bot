@@ -2,31 +2,46 @@ name: Ejecucion Diaria Bot Quant
 
 on:
   schedule:
-    - cron: '0 11 * * *'
+    - cron: "0 1 * * *"   # 8:00 p. m. en Colombia
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: football-bot
+  cancel-in-progress: false
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    
-    env:
-      FOOTBALL_DATA_KEY: ${{ secrets.FOOTBALL_DATA_KEY }}
-      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      CHAT_ID: ${{ secrets.CHAT_ID }}
-
     steps:
       - name: Checkout Código
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Configurar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
       - name: Instalar Dependencias
-        run: |
-          pip install requests rapidfuzz flask
+        run: pip install requests
 
       - name: Ejecutar Bot
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python ejecutar_bot.py
+
+      - name: Guardar historial
+        run: |
+          if [ -f historial_picks.csv ] && [ -n "$(git status --porcelain historial_picks.csv)" ]; then
+            git config user.name "football-bot"
+            git config user.email "football-bot@users.noreply.github.com"
+            git add historial_picks.csv
+            git commit -m "Actualiza historial de picks"
+            git push
+          else
+            echo "Sin cambios en el historial"
+          fi
