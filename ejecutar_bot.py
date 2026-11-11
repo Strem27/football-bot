@@ -43,7 +43,7 @@ LIGAS = [
 REGIONES = "eu,uk"          # Pinnacle viene en "eu". Costo = regiones x mercados por llamada
 CASA_REFERENCIA = "pinnacle"
 LINEA = 2.5
-VENTANA_HORAS = 24
+VENTANA_HORAS = 36
 
 MIN_CASAS = 5               # mínimo de casas con la línea 2.5 para confiar en la prob. justa
 MAX_DISPERSION = 0.035      # si las casas no se ponen de acuerdo (desv. est. de P(Over)), no se juega
