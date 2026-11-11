@@ -43,7 +43,7 @@ LIGAS = [
 REGIONES = "eu,uk"          # Pinnacle viene en "eu". Costo = regiones x mercados por llamada
 CASA_REFERENCIA = "pinnacle"
 LINEA = 2.5
-VENTANA_HORAS = 36
+VENTANA_HORAS = 24
 
 MIN_CASAS = 5               # mínimo de casas con la línea 2.5 para confiar en la prob. justa
 MAX_DISPERSION = 0.035      # si las casas no se ponen de acuerdo (desv. est. de P(Over)), no se juega
@@ -99,6 +99,7 @@ def calcular_kelly(prob, cuota, fraccion=KELLY_FRACCION):
 
 RESTANTES = None            # créditos restantes según la API
 DESCARTES = Counter()       # por qué se descartan los partidos
+DETALLE = []                # una línea por partido descartado
 
 
 # ------------------------------ DATOS (API) ----------------------------------
@@ -215,18 +216,37 @@ def extraer_totales(evento):
     return out
 
 
+def _motivo_descarte(cuota, ev, stake, mediana):
+    m = []
+    if cuota > mediana * MAX_SOBRE_MEDIANA:
+        m.append("cuota atípica vs mediana")
+    if cuota < CUOTA_MIN:
+        m.append(f"cuota < {CUOTA_MIN}")
+    if ev < EV_MIN:
+        m.append(f"EV < {EV_MIN * 100:.0f}%")
+    if ev > EV_MAX:
+        m.append(f"EV > {EV_MAX * 100:.0f}% (posible error)")
+    if ev >= EV_MIN and stake < STAKE_MIN:
+        m.append("stake muy bajo")
+    return ", ".join(m)
+
+
 def analizar_evento(evento):
-    """Devuelve el mejor pick del evento o None."""
+    """Devuelve el mejor pick del evento o None (y anota el motivo en DETALLE)."""
+    partido = f"{evento.get('home_team', '?')} vs {evento.get('away_team', '?')}"
     casas = extraer_totales(evento)
     if len(casas) < MIN_CASAS:
         DESCARTES["pocas casas con línea 2.5"] += 1
+        DETALLE.append(f"{partido}: solo {len(casas)} casas con línea {LINEA} (mín. {MIN_CASAS})")
         return None
 
     p_over_por_casa = {k: quitar_margen_potencia([v["over"], v["under"]])[0]
                        for k, v in casas.items()}
     valores = list(p_over_por_casa.values())
-    if statistics.pstdev(valores) > MAX_DISPERSION:
+    disp = statistics.pstdev(valores)
+    if disp > MAX_DISPERSION:
         DESCARTES["casas en desacuerdo"] += 1
+        DETALLE.append(f"{partido}: casas en desacuerdo (desv. {disp:.3f} > {MAX_DISPERSION})")
         return None
 
     if CASA_REFERENCIA in p_over_por_casa:
@@ -234,23 +254,29 @@ def analizar_evento(evento):
     else:
         p_over, ref = statistics.median(valores), f"mediana de {len(casas)} casas"
 
-    candidatos = []
+    candidatos, mejor_descartado = [], None
     for lado, prob in (("Over", p_over), ("Under", 1.0 - p_over)):
         k = lado.lower()
         precios = [(v[k], c) for c, v in casas.items()]
         mejor, casa_key = max(precios)
-        if mejor > statistics.median(p for p, _ in precios) * MAX_SOBRE_MEDIANA:
-            continue
+        mediana = statistics.median(p for p, _ in precios)
         ev = prob * mejor - 1.0
         stake = min(STAKE_MAX, calcular_kelly(prob, mejor))
-        if mejor >= CUOTA_MIN and EV_MIN <= ev <= EV_MAX and stake >= STAKE_MIN:
+        motivo = _motivo_descarte(mejor, ev, stake, mediana)
+        if not motivo:
             candidatos.append({
                 "mercado": f"Goles - {lado} {LINEA}", "prob": prob, "cuota": mejor,
                 "cuota_justa": 1.0 / prob, "ev": ev * 100.0, "stake": stake,
                 "casa": casas[casa_key]["titulo"], "referencia": ref, "n_casas": len(casas),
             })
+        elif mejor_descartado is None or ev > mejor_descartado[1]:
+            mejor_descartado = (lado, ev, mejor, motivo)
+
     if not candidatos:
         DESCARTES["sin valor (EV fuera de 4%-12% / cuota / stake)"] += 1
+        lado, ev, cuota, motivo = mejor_descartado
+        DETALLE.append(f"{partido}: {len(casas)} casas, mejor opción {lado} @{cuota:.2f} "
+                       f"EV {ev * 100:+.1f}% -> {motivo}")
         return None
     return max(candidatos, key=lambda c: c["ev"])
 
@@ -400,6 +426,8 @@ def escanear():
             )
             if enviar_telegram(msg):
                 enviados += 1
+    for linea in DETALLE[:60]:
+        print(f"  - {linea}")
     print(f"[DIAGNÓSTICO] partidos analizados: {vistos} | descartes: {dict(DESCARTES)}")
     print(f"=== FIN: {enviados} alertas enviadas ===")
 
@@ -418,4 +446,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-  
+                                          
