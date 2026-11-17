@@ -10,6 +10,8 @@ Idea (la única que es defendible con solo cuotas):
   4) Hay valor solo si prob_justa * mejor_cuota - 1 cae en un rango razonable.
   5) Cada pick se guarda, se liquida solo con el marcador real y se mide
      ROI y Brier para saber con datos si el filtro sirve.
+  6) Además se guarda TODO partido analizado (con o sin pick) en
+     partidos_analizados.csv, para medir calibración con muchos más datos.
 
 Uso:
   python bot_goles.py            -> liquida pendientes y busca picks nuevos
@@ -34,6 +36,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 BASE = "https://api.the-odds-api.com/v4"
 ARCHIVO_CSV = "historial_picks.csv"
+ARCHIVO_SOMBRA = "partidos_analizados.csv"
 
 LIGAS = [
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a", "soccer_germany_bundesliga",
@@ -63,6 +66,11 @@ CAMPOS = [
     "ID_Evento", "Sport", "Fecha_Ejecucion", "Inicio_UTC", "Liga", "Partido", "Mercado",
     "Casa", "Cuota", "Cuota_Justa", "Prob_Justa", "EV_%", "Stake_%", "Referencia",
     "N_Casas", "Estado", "Goles_Totales", "Profit_%Banca",
+]
+CAMPOS_SOMBRA = [
+    "ID_Evento", "Sport", "Inicio_UTC", "Liga", "Partido", "Ultima_Consulta", "N_Casas",
+    "Prob_Over_Justa", "Referencia", "Mejor_Lado", "Mejor_Cuota", "Mejor_EV_%", "Motivo",
+    "Es_Pick", "Goles_Totales", "Over_2.5",
 ]
 
 
@@ -231,28 +239,33 @@ def _motivo_descarte(cuota, ev, stake, mediana):
     return ", ".join(m)
 
 
-def analizar_evento(evento):
-    """Devuelve el mejor pick del evento o None (y anota el motivo en DETALLE)."""
+def evaluar_evento(evento):
+    """Devuelve (pick o None, info). 'info' describe el análisis aunque no haya pick."""
     partido = f"{evento.get('home_team', '?')} vs {evento.get('away_team', '?')}"
     casas = extraer_totales(evento)
+    info = {"partido": partido, "n_casas": len(casas), "p_over": None, "referencia": "",
+            "lado": "", "cuota": None, "ev": None, "motivo": ""}
     if len(casas) < MIN_CASAS:
         DESCARTES["pocas casas con línea 2.5"] += 1
         DETALLE.append(f"{partido}: solo {len(casas)} casas con línea {LINEA} (mín. {MIN_CASAS})")
-        return None
+        info["motivo"] = "pocas casas"
+        return None, info
 
     p_over_por_casa = {k: quitar_margen_potencia([v["over"], v["under"]])[0]
                        for k, v in casas.items()}
     valores = list(p_over_por_casa.values())
-    disp = statistics.pstdev(valores)
-    if disp > MAX_DISPERSION:
-        DESCARTES["casas en desacuerdo"] += 1
-        DETALLE.append(f"{partido}: casas en desacuerdo (desv. {disp:.3f} > {MAX_DISPERSION})")
-        return None
-
     if CASA_REFERENCIA in p_over_por_casa:
         p_over, ref = p_over_por_casa[CASA_REFERENCIA], "Pinnacle"
     else:
         p_over, ref = statistics.median(valores), f"mediana de {len(casas)} casas"
+    info["p_over"], info["referencia"] = p_over, ref
+
+    disp = statistics.pstdev(valores)
+    if disp > MAX_DISPERSION:
+        DESCARTES["casas en desacuerdo"] += 1
+        DETALLE.append(f"{partido}: casas en desacuerdo (desv. {disp:.3f} > {MAX_DISPERSION})")
+        info["motivo"] = "casas en desacuerdo"
+        return None, info
 
     candidatos, mejor_descartado = [], None
     for lado, prob in (("Over", p_over), ("Under", 1.0 - p_over)):
@@ -265,7 +278,7 @@ def analizar_evento(evento):
         motivo = _motivo_descarte(mejor, ev, stake, mediana)
         if not motivo:
             candidatos.append({
-                "mercado": f"Goles - {lado} {LINEA}", "prob": prob, "cuota": mejor,
+                "mercado": f"Goles - {lado} {LINEA}", "lado": lado, "prob": prob, "cuota": mejor,
                 "cuota_justa": 1.0 / prob, "ev": ev * 100.0, "stake": stake,
                 "casa": casas[casa_key]["titulo"], "referencia": ref, "n_casas": len(casas),
             })
@@ -277,32 +290,43 @@ def analizar_evento(evento):
         lado, ev, cuota, motivo = mejor_descartado
         DETALLE.append(f"{partido}: {len(casas)} casas, mejor opción {lado} @{cuota:.2f} "
                        f"EV {ev * 100:+.1f}% -> {motivo}")
-        return None
-    return max(candidatos, key=lambda c: c["ev"])
+        info.update(lado=lado, cuota=cuota, ev=ev * 100.0, motivo=motivo)
+        return None, info
+    pick = max(candidatos, key=lambda c: c["ev"])
+    info.update(lado=pick["lado"], cuota=pick["cuota"], ev=pick["ev"], motivo="")
+    return pick, info
+
+
+def analizar_evento(evento):
+    """Compatibilidad: solo el pick (o None)."""
+    return evaluar_evento(evento)[0]
 
 
 # ------------------------------ CSV ------------------------------------------
-def preparar_csv():
-    if not os.path.exists(ARCHIVO_CSV):
+def preparar_csv(archivo=None, campos=None):
+    archivo, campos = archivo or ARCHIVO_CSV, campos or CAMPOS
+    if not os.path.exists(archivo):
         return
-    with open(ARCHIVO_CSV, newline="", encoding="utf-8") as f:
+    with open(archivo, newline="", encoding="utf-8") as f:
         cab = next(csv.reader(f), [])
-    if cab != CAMPOS:
-        nuevo = ARCHIVO_CSV.replace(".csv", f"_formato_antiguo_{datetime.now():%Y%m%d%H%M%S}.csv")
-        os.replace(ARCHIVO_CSV, nuevo)
-        print(f"[INFO] CSV con formato anterior guardado como {nuevo}")
+    if cab != campos:
+        nuevo = archivo.replace(".csv", f"_formato_antiguo_{datetime.now():%Y%m%d%H%M%S}.csv")
+        os.replace(archivo, nuevo)
+        print(f"[INFO] {archivo} tenía otro formato; guardado como {nuevo}")
 
 
-def leer_csv():
-    if not os.path.exists(ARCHIVO_CSV):
+def leer_csv(archivo=None):
+    archivo = archivo or ARCHIVO_CSV
+    if not os.path.exists(archivo):
         return []
-    with open(ARCHIVO_CSV, newline="", encoding="utf-8") as f:
+    with open(archivo, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
-def escribir_csv(filas):
-    with open(ARCHIVO_CSV, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=CAMPOS)
+def escribir_csv(filas, archivo=None, campos=None):
+    archivo, campos = archivo or ARCHIVO_CSV, campos or CAMPOS
+    with open(archivo, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=campos)
         w.writeheader()
         w.writerows(filas)
 
@@ -316,17 +340,42 @@ def registrar(fila):
         w.writerow(fila)
 
 
-# ------------------------------ LIQUIDACIÓN ----------------------------------
-def liquidar_pendientes():
-    """Cierra picks con el marcador real. Ojo: en copas con prórroga revisa el resultado a mano."""
-    filas = leer_csv()
-    ahora = datetime.now(timezone.utc)
-    pend = [f for f in filas if f["Estado"] == "PENDIENTE"
-            and _parse_dt(f["Inicio_UTC"]) + timedelta(hours=3) < ahora]
-    if not pend:
+# ------------------------- REGISTRO DE TODOS LOS PARTIDOS --------------------
+def fila_sombra(ev, sport, info, ahora, es_pick):
+    return {
+        "ID_Evento": ev["id"], "Sport": sport, "Inicio_UTC": _iso(_parse_dt(ev["commence_time"])),
+        "Liga": ev.get("sport_title", sport), "Partido": info["partido"],
+        "Ultima_Consulta": f"{ahora:%Y-%m-%d %H:%M}", "N_Casas": info["n_casas"],
+        "Prob_Over_Justa": f"{info['p_over']:.4f}" if info["p_over"] is not None else "",
+        "Referencia": info["referencia"], "Mejor_Lado": info["lado"],
+        "Mejor_Cuota": f"{info['cuota']:.2f}" if info["cuota"] else "",
+        "Mejor_EV_%": f"{info['ev']:.2f}" if info["ev"] is not None else "",
+        "Motivo": info["motivo"], "Es_Pick": "SI" if es_pick else "NO",
+        "Goles_Totales": "", "Over_2.5": "",
+    }
+
+
+def guardar_sombra(nuevas):
+    """Un registro por partido: se conserva la ÚLTIMA consulta antes del inicio
+    (la más cercana al cierre). Los ya liquidados no se tocan."""
+    if not nuevas:
         return
+    filas = leer_csv(ARCHIVO_SOMBRA)
+    idx = {f["ID_Evento"]: i for i, f in enumerate(filas)}
+    for id_ev, fila in nuevas.items():
+        if id_ev in idx:
+            if filas[idx[id_ev]]["Goles_Totales"] != "":
+                continue
+            filas[idx[id_ev]] = fila
+        else:
+            filas.append(fila)
+    escribir_csv(filas, ARCHIVO_SOMBRA, CAMPOS_SOMBRA)
+
+
+# ------------------------------ LIQUIDACIÓN ----------------------------------
+def _totales_por_evento(sports):
     totales = {}
-    for sport in {f["Sport"] for f in pend}:
+    for sport in sports:
         try:
             r = requests.get(f"{BASE}/sports/{sport}/scores/",
                              params={"apiKey": ODDS_API_KEY, "daysFrom": 3, "dateFormat": "iso"},
@@ -338,8 +387,25 @@ def liquidar_pendientes():
                     totales[ev["id"]] = sum(int(s["score"]) for s in ev["scores"])
         except Exception as e:
             print(f"[ERROR] scores {sport}: {e}")
-    cambios = 0
-    for f in filas:
+    return totales
+
+
+def liquidar_pendientes():
+    """Cierra picks y partidos analizados con el marcador real.
+    Ojo: en copas con prórroga revisa el resultado a mano."""
+    ahora = datetime.now(timezone.utc)
+    espera = timedelta(hours=3)
+    picks, sombra = leer_csv(), leer_csv(ARCHIVO_SOMBRA)
+    pend_p = [f for f in picks if f["Estado"] == "PENDIENTE"
+              and _parse_dt(f["Inicio_UTC"]) + espera < ahora]
+    pend_s = [f for f in sombra if f["Goles_Totales"] == ""
+              and _parse_dt(f["Inicio_UTC"]) + espera < ahora]
+    if not pend_p and not pend_s:
+        return
+    totales = _totales_por_evento({f["Sport"] for f in pend_p + pend_s})
+
+    cambios_p = 0
+    for f in picks:
         if f["Estado"] != "PENDIENTE" or f["ID_Evento"] not in totales:
             continue
         goles = totales[f["ID_Evento"]]
@@ -349,27 +415,72 @@ def liquidar_pendientes():
         f["Goles_Totales"] = goles
         f["Estado"] = "GANADA" if gana else "PERDIDA"
         f["Profit_%Banca"] = round(stake * (cuota - 1.0) if gana else -stake, 4)
-        cambios += 1
-    if cambios:
-        escribir_csv(filas)
-        print(f"[INFO] {cambios} picks liquidados")
+        cambios_p += 1
+    if cambios_p:
+        escribir_csv(picks)
+
+    cambios_s = 0
+    for f in sombra:
+        if f["Goles_Totales"] != "" or f["ID_Evento"] not in totales:
+            continue
+        goles = totales[f["ID_Evento"]]
+        f["Goles_Totales"] = goles
+        f["Over_2.5"] = 1 if goles > LINEA else 0
+        cambios_s += 1
+    if cambios_s:
+        escribir_csv(sombra, ARCHIVO_SOMBRA, CAMPOS_SOMBRA)
+    print(f"[INFO] liquidados: {cambios_p} picks, {cambios_s} partidos analizados")
+
+
+# ------------------------------ RESÚMENES ------------------------------------
+def resumen_picks():
+    cerradas = [f for f in leer_csv() if f["Estado"] in ("GANADA", "PERDIDA")]
+    if not cerradas:
+        return "<b>PICKS</b>\nAún no hay picks liquidados."
+    n = len(cerradas)
+    ganadas = sum(f["Estado"] == "GANADA" for f in cerradas)
+    stake_tot = sum(float(f["Stake_%"]) for f in cerradas)
+    profit = sum(float(f["Profit_%Banca"]) for f in cerradas)
+    brier = sum((float(f["Prob_Justa"]) - (f["Estado"] == "GANADA")) ** 2 for f in cerradas) / n
+    p_media = sum(float(f["Prob_Justa"]) for f in cerradas) / n
+    return (f"<b>PICKS</b>\nLiquidados: {n} | aciertos: {ganadas} ({ganadas / n * 100:.1f}%) "
+            f"| prob. media esperada: {p_media * 100:.1f}%\nProfit: {profit:+.2f}% de banca | "
+            f"ROI sobre stake: {profit / stake_tot * 100:+.1f}%\nBrier: {brier:.3f} (0.25 = azar)")
+
+
+def resumen_sombra():
+    filas = [f for f in leer_csv(ARCHIVO_SOMBRA)
+             if f["Goles_Totales"] != "" and f["Prob_Over_Justa"] != ""]
+    if not filas:
+        return "<b>PARTIDOS ANALIZADOS</b>\nAún no hay partidos liquidados."
+    n = len(filas)
+    p = [float(f["Prob_Over_Justa"]) for f in filas]
+    y = [int(f["Over_2.5"]) for f in filas]
+    brier = sum((pi - yi) ** 2 for pi, yi in zip(p, y)) / n
+    tasa = sum(y) / n
+    base = tasa * (1 - tasa)
+    txt = [f"<b>PARTIDOS ANALIZADOS</b> (n={n})",
+           f"P(Over) justa media: {sum(p) / n * 100:.1f}% | Over real: {tasa * 100:.1f}%",
+           f"Brier: {brier:.3f} (referencia constante: {base:.3f})"]
+    cubos = {"EV < 0%": [], "EV 0 a 2%": [], "EV 2 a 4%": [], "EV >= 4%": []}
+    for f in filas:
+        if not f["Mejor_Cuota"] or f["Mejor_EV_%"] == "":
+            continue
+        ev, cuota, over = float(f["Mejor_EV_%"]), float(f["Mejor_Cuota"]), int(f["Over_2.5"])
+        gana = (over == 1) if f["Mejor_Lado"] == "Over" else (over == 0)
+        clave = "EV < 0%" if ev < 0 else "EV 0 a 2%" if ev < 2 else "EV 2 a 4%" if ev < 4 else "EV >= 4%"
+        cubos[clave].append(cuota - 1.0 if gana else -1.0)
+    txt.append("ROI hipotético de la mejor opción (1 unidad fija), por EV al analizar:")
+    for k, v in cubos.items():
+        if v:
+            txt.append(f"  {k}: n={len(v)}, ROI {sum(v) / len(v) * 100:+.1f}%")
+    txt.append("<i>Si el ROI no sube al subir el EV, el filtro no tiene señal. "
+               "Con n < 200 todo esto es ruido.</i>")
+    return "\n".join(txt)
 
 
 def resumen(enviar=False):
-    cerradas = [f for f in leer_csv() if f["Estado"] in ("GANADA", "PERDIDA")]
-    if not cerradas:
-        txt = "Aún no hay picks liquidados."
-    else:
-        n = len(cerradas)
-        ganadas = sum(f["Estado"] == "GANADA" for f in cerradas)
-        stake_tot = sum(float(f["Stake_%"]) for f in cerradas)
-        profit = sum(float(f["Profit_%Banca"]) for f in cerradas)
-        brier = sum((float(f["Prob_Justa"]) - (f["Estado"] == "GANADA")) ** 2 for f in cerradas) / n
-        p_media = sum(float(f["Prob_Justa"]) for f in cerradas) / n
-        txt = (f"<b>RESUMEN</b>\nPicks liquidados: {n}\nAciertos: {ganadas} ({ganadas / n * 100:.1f}%) "
-               f"| prob. media esperada: {p_media * 100:.1f}%\nProfit: {profit:+.2f}% de banca | "
-               f"ROI sobre stake: {profit / stake_tot * 100:+.1f}%\nBrier: {brier:.3f} (0.25 = azar)\n"
-               f"<i>Con menos de ~200 picks el ROI es ruido estadístico.</i>")
+    txt = resumen_picks() + "\n\n" + resumen_sombra()
     print(txt)
     if enviar:
         enviar_telegram(txt)
@@ -380,70 +491,10 @@ def escanear():
     ahora = datetime.now(timezone.utc)
     hasta = ahora + timedelta(hours=VENTANA_HORAS)
     ya = {f["ID_Evento"] for f in leer_csv()}
+    sombra = {}
     enviados = 0
     vistos = 0
     for sport in deportes_activos():
         if RESTANTES is not None and RESTANTES <= CREDITOS_MINIMOS:
             print(f"[AVISO] Quedan {RESTANTES} créditos: me detengo para no agotarlos.")
-            break
-        eventos = listar_eventos(sport, ahora, hasta)
-        if eventos is not None:
-            nuevos = [e for e in eventos if e["id"] not in ya]
-            if not nuevos:
-                print(f"[SKIP] {sport}: sin partidos nuevos en {VENTANA_HORAS} h (0 créditos gastados)")
-                continue
-        for ev in consultar_cuotas(sport, ahora, hasta):
-            vistos += 1
-            if ev["id"] in ya:
-                continue
-            inicio = _parse_dt(ev["commence_time"])
-            if inicio <= ahora:
-                continue
-            pick = analizar_evento(ev)
-            if not pick:
-                continue
-            partido = f"{ev['home_team']} vs {ev['away_team']}"
-            registrar({
-                "ID_Evento": ev["id"], "Sport": sport, "Fecha_Ejecucion": f"{ahora:%Y-%m-%d %H:%M}",
-                "Inicio_UTC": _iso(inicio), "Liga": ev.get("sport_title", sport), "Partido": partido,
-                "Mercado": pick["mercado"], "Casa": pick["casa"], "Cuota": f"{pick['cuota']:.2f}",
-                "Cuota_Justa": f"{pick['cuota_justa']:.3f}", "Prob_Justa": f"{pick['prob']:.4f}",
-                "EV_%": f"{pick['ev']:.2f}", "Stake_%": f"{pick['stake']:.2f}",
-                "Referencia": pick["referencia"], "N_Casas": pick["n_casas"],
-                "Estado": "PENDIENTE", "Goles_Totales": "", "Profit_%Banca": "",
-            })
-            ya.add(ev["id"])
-            msg = (
-                f"⚡ <b>PICK GOLES</b>\n\n"
-                f"🏆 {html.escape(ev.get('sport_title', sport))}\n"
-                f"🏟️ {html.escape(partido)}\n"
-                f"🕒 {inicio.astimezone(ZONA):%d/%m %H:%M} (hora Colombia)\n"
-                f"📌 <b>{pick['mercado']}</b> @ <b>{pick['cuota']:.2f}</b> ({html.escape(pick['casa'])})\n"
-                f"📊 Prob. justa: {pick['prob'] * 100:.1f}% (cuota justa {pick['cuota_justa']:.2f}) "
-                f"| EV: +{pick['ev']:.1f}%\n"
-                f"🧮 Referencia: {pick['referencia']}\n"
-                f"🛡️ Stake (Kelly {KELLY_FRACCION}): <b>{pick['stake']:.2f}% de la banca</b>"
-            )
-            if enviar_telegram(msg):
-                enviados += 1
-    for linea in DETALLE[:60]:
-        print(f"  - {linea}")
-    print(f"[DIAGNÓSTICO] partidos analizados: {vistos} | descartes: {dict(DESCARTES)}")
-    print(f"=== FIN: {enviados} alertas enviadas ===")
-
-
-def main():
-    if not ODDS_API_KEY:
-        print("Falta ODDS_API_KEY")
-        sys.exit(1)
-    preparar_csv()
-    if len(sys.argv) > 1 and sys.argv[1] == "resumen":
-        resumen(enviar=True)
-        return
-    liquidar_pendientes()
-    escanear()
-
-
-if __name__ == "__main__":
-    main()
-                                          
+           
