@@ -41,7 +41,7 @@ ARCHIVO_SOMBRA = "partidos_analizados.csv"
 LIGAS = [
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a", "soccer_germany_bundesliga",
     "soccer_france_ligue_one", "soccer_uefa_champs_league", "soccer_uefa_nations_league",
-    "soccer_efl_champ",
+    "soccer_efl_champ", "soccer_spain_copa_del_rey",
 ]
 REGIONES = "eu,uk"          # Pinnacle viene en "eu". Costo = regiones x mercados por llamada
 CASA_REFERENCIA = "pinnacle"
@@ -497,4 +497,69 @@ def escanear():
     for sport in deportes_activos():
         if RESTANTES is not None and RESTANTES <= CREDITOS_MINIMOS:
             print(f"[AVISO] Quedan {RESTANTES} créditos: me detengo para no agotarlos.")
-           
+            break
+        eventos = listar_eventos(sport, ahora, hasta)
+        if eventos is not None:
+            nuevos = [e for e in eventos if e["id"] not in ya]
+            if not nuevos:
+                print(f"[SKIP] {sport}: sin partidos nuevos en {VENTANA_HORAS} h (0 créditos gastados)")
+                continue
+        for ev in consultar_cuotas(sport, ahora, hasta):
+            vistos += 1
+            if ev["id"] in ya:
+                continue
+            inicio = _parse_dt(ev["commence_time"])
+            if inicio <= ahora:
+                continue
+            pick, info = evaluar_evento(ev)
+            sombra[ev["id"]] = fila_sombra(ev, sport, info, ahora, pick is not None)
+            if not pick:
+                continue
+            partido = f"{ev['home_team']} vs {ev['away_team']}"
+            registrar({
+                "ID_Evento": ev["id"], "Sport": sport, "Fecha_Ejecucion": f"{ahora:%Y-%m-%d %H:%M}",
+                "Inicio_UTC": _iso(inicio), "Liga": ev.get("sport_title", sport), "Partido": partido,
+                "Mercado": pick["mercado"], "Casa": pick["casa"], "Cuota": f"{pick['cuota']:.2f}",
+                "Cuota_Justa": f"{pick['cuota_justa']:.3f}", "Prob_Justa": f"{pick['prob']:.4f}",
+                "EV_%": f"{pick['ev']:.2f}", "Stake_%": f"{pick['stake']:.2f}",
+                "Referencia": pick["referencia"], "N_Casas": pick["n_casas"],
+                "Estado": "PENDIENTE", "Goles_Totales": "", "Profit_%Banca": "",
+            })
+            ya.add(ev["id"])
+            msg = (
+                f"⚡ <b>PICK GOLES</b>\n\n"
+                f"🏆 {html.escape(ev.get('sport_title', sport))}\n"
+                f"🏟️ {html.escape(partido)}\n"
+                f"🕒 {inicio.astimezone(ZONA):%d/%m %H:%M} (hora Colombia)\n"
+                f"📌 <b>{pick['mercado']}</b> @ <b>{pick['cuota']:.2f}</b> ({html.escape(pick['casa'])})\n"
+                f"📊 Prob. justa: {pick['prob'] * 100:.1f}% (cuota justa {pick['cuota_justa']:.2f}) "
+                f"| EV: +{pick['ev']:.1f}%\n"
+                f"🧮 Referencia: {pick['referencia']}\n"
+                f"🎯 Cuota mínima en TU casa (EV ≥ {EV_MIN * 100:.0f}%): "
+                f"<b>{(1 + EV_MIN) / pick['prob']:.2f}</b> (si paga menos, no hay valor)\n"
+                f"🛡️ Stake (Kelly {KELLY_FRACCION}): <b>{pick['stake']:.2f}% de la banca</b>"
+            )
+            if enviar_telegram(msg):
+                enviados += 1
+    guardar_sombra(sombra)
+    for linea in DETALLE[:60]:
+        print(f"  - {linea}")
+    print(f"[DIAGNÓSTICO] partidos analizados: {vistos} | descartes: {dict(DESCARTES)}")
+    print(f"=== FIN: {enviados} alertas enviadas ===")
+
+
+def main():
+    if not ODDS_API_KEY:
+        print("Falta ODDS_API_KEY")
+        sys.exit(1)
+    preparar_csv(ARCHIVO_CSV, CAMPOS)
+    preparar_csv(ARCHIVO_SOMBRA, CAMPOS_SOMBRA)
+    if len(sys.argv) > 1 and sys.argv[1] == "resumen":
+        resumen(enviar=True)
+        return
+    liquidar_pendientes()
+    escanear()
+
+
+if __name__ == "__main__":
+    main()
