@@ -1,0 +1,4 @@
+ID_Evento,Sport,Inicio_UTC,Liga,Partido,Ultima_Consulta,N_Casas,Prob_Over_Justa,Referencia,Mejor_Lado,Mejor_Cuota,Mejor_EV_%,Motivo,Es_Pick,Goles_Totales,Over_2.5
+dcee36f9b8a9989972b6d4ddde76c4c7,soccer_spain_la_liga,2026-11-20T20:00:00Z,La Liga - Spain,Athletic Bilbao vs Espanyol,2026-11-19 22:45,17,0.5294,Pinnacle,Over,1.92,1.65,EV < 4%,NO,,
+cae480fb1195f0032554a268cb80eb44,soccer_germany_bundesliga,2026-11-20T19:30:00Z,Bundesliga - Germany,Bayern Munich vs 1. FC Köln,2026-11-19 22:45,3,,,,,,pocas casas,NO,,
+5dcc9d2b0da87770a4f49e924275be39,soccer_france_ligue_one,2026-11-20T19:45:00Z,Ligue 1 - France,Troyes vs Le Havre,2026-11-19 22:45,18,0.5067,Pinnacle,Under,2.00,-1.34,EV < 4%,NO,,
