@@ -60,6 +60,13 @@ STAKE_MAX = 1.50            # % de banca
 
 CREDITOS_MINIMOS = 10      # si quedan menos créditos, el bot no consulta más
 
+CASA_USUARIO = "Rushbet"    # casa donde apuestas (se muestra en la cuota mínima)
+# Ligas con prórroga/penales: el marcador de la API puede no ser el de los 90 minutos,
+# así que NO se liquidan solas. Quedan en "REVISAR" y tú confirmas los goles en
+# resultados_manuales.csv (una línea por partido: texto del partido,goles en 90 min).
+LIGAS_REVISAR = {"soccer_spain_copa_del_rey"}
+ARCHIVO_MANUAL = "resultados_manuales.csv"
+
 ZONA = timezone(timedelta(hours=-5))   # hora que se muestra en Telegram (Colombia)
 
 CAMPOS = [
@@ -390,46 +397,99 @@ def _totales_por_evento(sports):
     return totales
 
 
+def _cerrar_pick(f, goles):
+    over = "Over" in f["Mercado"]
+    gana = (goles > LINEA) if over else (goles < LINEA)
+    stake, cuota = float(f["Stake_%"]), float(f["Cuota"])
+    f["Goles_Totales"] = goles
+    f["Estado"] = "GANADA" if gana else "PERDIDA"
+    f["Profit_%Banca"] = round(stake * (cuota - 1.0) if gana else -stake, 4)
+
+
+def _cerrar_sombra(f, goles):
+    f["Goles_Totales"] = goles
+    f["Over_2.5"] = 1 if goles > LINEA else 0
+
+
+def aplicar_resultados_manuales(picks, sombra):
+    """Lee resultados_manuales.csv (texto del partido,goles_90min) y cierra o corrige partidos de copa."""
+    if not os.path.exists(ARCHIVO_MANUAL):
+        return 0
+    n = 0
+    with open(ARCHIVO_MANUAL, newline="", encoding="utf-8") as fh:
+        for fila in csv.reader(fh):
+            if len(fila) < 2 or not fila[1].strip().isdigit():
+                continue
+            texto, goles = fila[0].strip().lower(), int(fila[1])
+            if not texto:
+                continue
+            # Solo ligas de LIGAS_REVISAR; también corrige partidos ya liquidados con el
+            # marcador de la API (idempotente: repetir la misma línea no cambia nada).
+            for f in picks:
+                if f["Sport"] in LIGAS_REVISAR and f["Estado"] != "PENDIENTE" \
+                        and texto in f["Partido"].lower():
+                    _cerrar_pick(f, goles)
+                    n += 1
+            for f in sombra:
+                if f["Sport"] in LIGAS_REVISAR and f["Goles_Totales"] != "" \
+                        and texto in f["Partido"].lower():
+                    _cerrar_sombra(f, goles)
+                    n += 1
+    return n
+
+
 def liquidar_pendientes():
     """Cierra picks y partidos analizados con el marcador real.
-    Ojo: en copas con prórroga revisa el resultado a mano."""
+    Las ligas de LIGAS_REVISAR (copas con prórroga) quedan en REVISAR hasta que
+    confirmes los goles de los 90 minutos en resultados_manuales.csv."""
     ahora = datetime.now(timezone.utc)
     espera = timedelta(hours=3)
     picks, sombra = leer_csv(), leer_csv(ARCHIVO_SOMBRA)
+
+    manuales = aplicar_resultados_manuales(picks, sombra)
+
     pend_p = [f for f in picks if f["Estado"] == "PENDIENTE"
               and _parse_dt(f["Inicio_UTC"]) + espera < ahora]
     pend_s = [f for f in sombra if f["Goles_Totales"] == ""
               and _parse_dt(f["Inicio_UTC"]) + espera < ahora]
-    if not pend_p and not pend_s:
-        return
-    totales = _totales_por_evento({f["Sport"] for f in pend_p + pend_s})
+    totales = _totales_por_evento({f["Sport"] for f in pend_p + pend_s}) if (pend_p or pend_s) else {}
 
-    cambios_p = 0
-    for f in picks:
-        if f["Estado"] != "PENDIENTE" or f["ID_Evento"] not in totales:
+    cambios_p = cambios_s = 0
+    revisar = []
+    for f in pend_p:
+        if f["ID_Evento"] not in totales:
             continue
         goles = totales[f["ID_Evento"]]
-        over = "Over" in f["Mercado"]
-        gana = (goles > LINEA) if over else (goles < LINEA)
-        stake, cuota = float(f["Stake_%"]), float(f["Cuota"])
-        f["Goles_Totales"] = goles
-        f["Estado"] = "GANADA" if gana else "PERDIDA"
-        f["Profit_%Banca"] = round(stake * (cuota - 1.0) if gana else -stake, 4)
-        cambios_p += 1
-    if cambios_p:
+        if f["Sport"] in LIGAS_REVISAR:
+            f["Estado"], f["Goles_Totales"] = "REVISAR", goles
+            revisar.append((f["Partido"], goles))
+        else:
+            _cerrar_pick(f, goles)
+            cambios_p += 1
+    for f in pend_s:
+        if f["ID_Evento"] not in totales:
+            continue
+        goles = totales[f["ID_Evento"]]
+        if f["Sport"] in LIGAS_REVISAR:
+            f["Goles_Totales"] = "REVISAR"
+            f["Motivo"] = (f["Motivo"] + f" | API={goles} goles").strip(" |")
+            if (f["Partido"], goles) not in revisar:
+                revisar.append((f["Partido"], goles))
+        else:
+            _cerrar_sombra(f, goles)
+            cambios_s += 1
+
+    if cambios_p or manuales or revisar:
         escribir_csv(picks)
-
-    cambios_s = 0
-    for f in sombra:
-        if f["Goles_Totales"] != "" or f["ID_Evento"] not in totales:
-            continue
-        goles = totales[f["ID_Evento"]]
-        f["Goles_Totales"] = goles
-        f["Over_2.5"] = 1 if goles > LINEA else 0
-        cambios_s += 1
-    if cambios_s:
+    if cambios_s or manuales or revisar:
         escribir_csv(sombra, ARCHIVO_SOMBRA, CAMPOS_SOMBRA)
-    print(f"[INFO] liquidados: {cambios_p} picks, {cambios_s} partidos analizados")
+    print(f"[INFO] liquidados: {cambios_p} picks, {cambios_s} partidos analizados, "
+          f"{manuales} manuales, {len(revisar)} por revisar")
+    if revisar:
+        lineas = "\n".join(f"• {p}: la API dice {g} goles" for p, g in revisar)
+        enviar_telegram("📝 <b>Copa: confirma los goles de los 90 minutos</b>\n" + lineas +
+                        f"\nAgrega una línea por partido en {ARCHIVO_MANUAL}: "
+                        "<code>texto del partido,goles</code>")
 
 
 # ------------------------------ RESÚMENES ------------------------------------
@@ -450,7 +510,7 @@ def resumen_picks():
 
 def resumen_sombra():
     filas = [f for f in leer_csv(ARCHIVO_SOMBRA)
-             if f["Goles_Totales"] != "" and f["Prob_Over_Justa"] != ""]
+             if f["Over_2.5"] in ("0", "1") and f["Prob_Over_Justa"] != ""]
     if not filas:
         return "<b>PARTIDOS ANALIZADOS</b>\nAún no hay partidos liquidados."
     n = len(filas)
@@ -535,7 +595,7 @@ def escanear():
                 f"📊 Prob. justa: {pick['prob'] * 100:.1f}% (cuota justa {pick['cuota_justa']:.2f}) "
                 f"| EV: +{pick['ev']:.1f}%\n"
                 f"🧮 Referencia: {pick['referencia']}\n"
-                f"🎯 Cuota mínima en TU casa (EV ≥ {EV_MIN * 100:.0f}%): "
+                f"🎯 Cuota mínima en {CASA_USUARIO} (EV ≥ {EV_MIN * 100:.0f}%): "
                 f"<b>{(1 + EV_MIN) / pick['prob']:.2f}</b> (si paga menos, no hay valor)\n"
                 f"🛡️ Stake (Kelly {KELLY_FRACCION}): <b>{pick['stake']:.2f}% de la banca</b>"
             )
