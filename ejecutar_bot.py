@@ -50,6 +50,7 @@ CASA_REFERENCIA = "pinnacle"
 LINEA = 2.5                 # línea de referencia (desempate y valor por defecto)
 LINEAS_VALIDAS = (1.5, 2.5, 3.5, 4.5)   # líneas .5 (sin devolución de apuesta)
 VENTANA_HORAS = 24
+REANALISIS_HORAS = 12       # no se vuelve a consultar un partido analizado hace menos de estas horas (ahorra créditos)
 
 MIN_CASAS = 5               # mínimo de casas en UNA misma línea para confiar en la prob. justa
 MAX_DISPERSION = 0.035      # si las casas no se ponen de acuerdo (desv. est. de P(Over)), no se juega
@@ -688,10 +689,25 @@ def enviar_referencias(lista):
         enviar_telegram(b)
 
 
+def _analizados_recientes(ahora):
+    """IDs de partidos (sin resultado todavía) analizados hace menos de REANALISIS_HORAS."""
+    limite = ahora - timedelta(hours=REANALISIS_HORAS)
+    out = set()
+    for f in leer_csv(ARCHIVO_SOMBRA):
+        try:
+            t = datetime.strptime(f["Ultima_Consulta"], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        except (ValueError, KeyError, TypeError):
+            continue
+        if t >= limite and f.get("Goles_Totales", "") == "":
+            out.add(f["ID_Evento"])
+    return out
+
+
 def escanear():
     ahora = datetime.now(timezone.utc)
     hasta = ahora + timedelta(hours=VENTANA_HORAS)
     ya = {f["ID_Evento"] for f in leer_csv()}
+    omitir = ya | _analizados_recientes(ahora)
     sombra = {}
     referencias = []
     enviados = 0
@@ -702,14 +718,15 @@ def escanear():
             break
         eventos = listar_eventos(sport, ahora, hasta)
         if eventos is not None:
-            nuevos = [e for e in eventos if e["id"] not in ya]
+            nuevos = [e for e in eventos if e["id"] not in omitir]
             if not nuevos:
-                print(f"[SKIP] {sport}: sin partidos nuevos en {VENTANA_HORAS} h (0 créditos gastados)")
+                print(f"[SKIP] {sport}: sin partidos nuevos en {VENTANA_HORAS} h "
+                      f"(o analizados hace < {REANALISIS_HORAS} h) (0 créditos gastados)")
                 continue
         for ev in consultar_cuotas(sport, ahora, hasta):
-            vistos += 1
-            if ev["id"] in ya:
+            if ev["id"] in omitir:
                 continue
+            vistos += 1
             inicio = _parse_dt(ev["commence_time"])
             if inicio <= ahora:
                 continue
@@ -760,6 +777,7 @@ def main():
     preparar_csv(ARCHIVO_CSV, CAMPOS)
     preparar_csv(ARCHIVO_SOMBRA, CAMPOS_SOMBRA)
     if len(sys.argv) > 1 and sys.argv[1] == "resumen":
+        liquidar_pendientes()       # cierra lo que ya terminó (gasta créditos solo si hay pendientes)
         resumen(enviar=True)
         return
     liquidar_pendientes()
