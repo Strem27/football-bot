@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Bot de value betting en Over/Under 2.5 goles (fútbol).
+Bot de value betting en Over/Under de goles (fútbol), líneas 1.5 / 2.5 / 3.5 / 4.5.
 
 Idea (la única que es defendible con solo cuotas):
   1) Se quita el margen (vig) de CADA casa con el método de potencia.
   2) La probabilidad "justa" sale de Pinnacle (casa de referencia) o, si no está,
      de la mediana de al menos MIN_CASAS casas.
-  3) Se busca la MEJOR cuota disponible entre todas las casas.
+  3) Se analiza UNA línea por partido: la que tenga más casas (empate: la más cercana a 2.5).
+     Se busca la MEJOR cuota disponible entre las casas de esa línea.
   4) Hay valor solo si prob_justa * mejor_cuota - 1 cae en un rango razonable.
   5) Cada pick se guarda, se liquida solo con el marcador real y se mide
      ROI y Brier para saber con datos si el filtro sirve.
@@ -21,6 +22,7 @@ Variables de entorno: ODDS_API_KEY, TELEGRAM_TOKEN, CHAT_ID
 """
 import csv
 import html
+import math
 import os
 import statistics
 import sys
@@ -45,13 +47,15 @@ LIGAS = [
 ]
 REGIONES = "eu,uk"          # Pinnacle viene en "eu". Costo = regiones x mercados por llamada
 CASA_REFERENCIA = "pinnacle"
-LINEA = 2.5
+LINEA = 2.5                 # línea de referencia (desempate y valor por defecto)
+LINEAS_VALIDAS = (1.5, 2.5, 3.5, 4.5)   # líneas .5 (sin devolución de apuesta)
 VENTANA_HORAS = 24
 
-MIN_CASAS = 5               # mínimo de casas con la línea 2.5 para confiar en la prob. justa
+MIN_CASAS = 5               # mínimo de casas en UNA misma línea para confiar en la prob. justa
 MAX_DISPERSION = 0.035      # si las casas no se ponen de acuerdo (desv. est. de P(Over)), no se juega
 MAX_SOBRE_MEDIANA = 1.12    # cuota que supera 12% a la mediana = probable error/línea vieja
-CUOTA_MIN = 1.50
+CUOTA_MIN = 1.50              # cuota mínima en la línea 2.5
+CUOTA_MIN_OTRAS_LINEAS = 1.20   # en 1.5 / 3.5 las cuotas son más bajas por naturaleza
 EV_MIN = 0.04
 EV_MAX = 0.12               # un EV mayor casi siempre es error de datos, no una oportunidad
 KELLY_FRACCION = 0.25
@@ -67,6 +71,12 @@ CASA_USUARIO = "Rushbet"    # casa donde apuestas (se muestra en la cuota mínim
 LIGAS_REVISAR = {"soccer_spain_copa_del_rey"}
 ARCHIVO_MANUAL = "resultados_manuales.csv"
 
+# Referencias de cuotas justas para las líneas 1.5 y 3.5 (ESTIMADAS con un modelo Poisson
+# a partir de la probabilidad justa de la línea 2.5; no son cuotas de mercado).
+ENVIAR_REFERENCIAS = True   # manda a Telegram un resumen con las cuotas justas del día
+MARGEN_ESTIMACION = 0.08    # colchón provisional para líneas estimadas (hasta validar con datos)
+MAX_REFERENCIAS = 25        # máximo de partidos en el resumen
+
 ZONA = timezone(timedelta(hours=-5))   # hora que se muestra en Telegram (Colombia)
 
 CAMPOS = [
@@ -77,7 +87,8 @@ CAMPOS = [
 CAMPOS_SOMBRA = [
     "ID_Evento", "Sport", "Inicio_UTC", "Liga", "Partido", "Ultima_Consulta", "N_Casas",
     "Prob_Over_Justa", "Referencia", "Mejor_Lado", "Mejor_Cuota", "Mejor_EV_%", "Motivo",
-    "Es_Pick", "Goles_Totales", "Over_2.5",
+    "Es_Pick", "Goles_Totales", "Over_2.5", "P_Over15_Est", "P_Over35_Est",
+    "Linea", "Over_Linea",
 ]
 
 
@@ -115,6 +126,34 @@ def calcular_kelly(prob, cuota, fraccion=KELLY_FRACCION):
 RESTANTES = None            # créditos restantes según la API
 DESCARTES = Counter()       # por qué se descartan los partidos
 DETALLE = []                # una línea por partido descartado
+
+
+# ------------------------- LÍNEAS 1.5 / 3.5 (ESTIMADAS) ----------------------
+def _poisson_ge(lmbda, k):
+    """P(N >= k) con N ~ Poisson(lmbda)."""
+    p, acum = math.exp(-lmbda), 0.0
+    for i in range(k):
+        acum += p
+        p *= lmbda / (i + 1)
+    return max(0.0, 1.0 - acum)
+
+
+def probs_otras_lineas(p_over, linea=LINEA):
+    """Dada P(Over linea) justa, estima P(Over 1.5), P(Over 2.5) y P(Over 3.5) suponiendo que los
+    goles totales siguen una Poisson calibrada para reproducir esa probabilidad. Aproximación:
+    en partidos muy desiguales las colas reales suelen ser algo más gruesas. Se valida con el CSV."""
+    p = min(0.98, max(0.02, p_over))
+    k_base = int(linea) + 1                      # Over 2.5 <=> al menos 3 goles
+    lo, hi = 0.05, 12.0
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if _poisson_ge(mid, k_base) < p:
+            lo = mid
+        else:
+            hi = mid
+    lam = (lo + hi) / 2
+    return {"over15": _poisson_ge(lam, 2), "over25": _poisson_ge(lam, 3),
+            "over35": _poisson_ge(lam, 4), "lambda": lam}
 
 
 # ------------------------------ DATOS (API) ----------------------------------
@@ -209,34 +248,53 @@ def enviar_telegram(mensaje):
 
 # ------------------------------ ANÁLISIS -------------------------------------
 def extraer_totales(evento):
-    """{casa: {'titulo', 'over', 'under'}} solo con la línea LINEA y ambos lados de la MISMA casa."""
+    """{linea: {casa: {'titulo', 'over', 'under'}}} para las líneas de LINEAS_VALIDAS,
+    con ambos lados de la MISMA casa."""
     out = {}
     for b in evento.get("bookmakers", []):
         for m in b.get("markets", []):
             if m.get("key") != "totals":
                 continue
-            over = under = None
+            por_linea = {}
             for o in m.get("outcomes", []):
                 pt = o.get("point")
-                if pt is None or abs(float(pt) - LINEA) > 1e-9:
+                if pt is None:
+                    continue
+                pt = float(pt)
+                if not any(abs(pt - l) < 1e-9 for l in LINEAS_VALIDAS):
                     continue
                 n = str(o.get("name", "")).lower()
-                if n == "over":
-                    over = o.get("price")
-                elif n == "under":
-                    under = o.get("price")
-            if over and under and over > 1.0 and under > 1.0:
-                out[b["key"]] = {"titulo": b.get("title", b["key"]),
-                                 "over": float(over), "under": float(under)}
+                if n in ("over", "under"):
+                    por_linea.setdefault(pt, {})[n] = o.get("price")
+            for pt, d in por_linea.items():
+                over, under = d.get("over"), d.get("under")
+                if over and under and over > 1.0 and under > 1.0:
+                    out.setdefault(pt, {})[b["key"]] = {
+                        "titulo": b.get("title", b["key"]), "over": float(over), "under": float(under)}
     return out
 
 
-def _motivo_descarte(cuota, ev, stake, mediana):
+def _resumen_lineas(totales):
+    if not totales:
+        return "sin datos de totales"
+    return ", ".join(f"{l}x{len(c)}" for l, c in sorted(totales.items()))
+
+
+def elegir_linea(totales):
+    """La línea con más casas (mínimo MIN_CASAS). Empate: la más cercana a LINEA."""
+    validas = [(l, len(c)) for l, c in totales.items() if len(c) >= MIN_CASAS]
+    if not validas:
+        return None
+    return min(validas, key=lambda x: (-x[1], abs(x[0] - LINEA)))[0]
+
+
+def _motivo_descarte(cuota, ev, stake, mediana, linea=LINEA):
+    cuota_min = CUOTA_MIN if abs(linea - LINEA) < 1e-9 else CUOTA_MIN_OTRAS_LINEAS
     m = []
     if cuota > mediana * MAX_SOBRE_MEDIANA:
         m.append("cuota atípica vs mediana")
-    if cuota < CUOTA_MIN:
-        m.append(f"cuota < {CUOTA_MIN}")
+    if cuota < cuota_min:
+        m.append(f"cuota < {cuota_min}")
     if ev < EV_MIN:
         m.append(f"EV < {EV_MIN * 100:.0f}%")
     if ev > EV_MAX:
@@ -249,15 +307,18 @@ def _motivo_descarte(cuota, ev, stake, mediana):
 def evaluar_evento(evento):
     """Devuelve (pick o None, info). 'info' describe el análisis aunque no haya pick."""
     partido = f"{evento.get('home_team', '?')} vs {evento.get('away_team', '?')}"
-    casas = extraer_totales(evento)
-    info = {"partido": partido, "n_casas": len(casas), "p_over": None, "referencia": "",
-            "lado": "", "cuota": None, "ev": None, "motivo": ""}
-    if len(casas) < MIN_CASAS:
-        DESCARTES["pocas casas con línea 2.5"] += 1
-        DETALLE.append(f"{partido}: solo {len(casas)} casas con línea {LINEA} (mín. {MIN_CASAS})")
+    totales = extraer_totales(evento)
+    linea = elegir_linea(totales)
+    info = {"partido": partido, "linea": linea,
+            "n_casas": len(totales[linea]) if linea else max((len(c) for c in totales.values()), default=0),
+            "p_over": None, "referencia": "", "lado": "", "cuota": None, "ev": None, "motivo": ""}
+    if linea is None:
+        DESCARTES["ninguna línea con suficientes casas"] += 1
+        DETALLE.append(f"{partido}: ninguna línea con >= {MIN_CASAS} casas ({_resumen_lineas(totales)})")
         info["motivo"] = "pocas casas"
         return None, info
 
+    casas = totales[linea]
     p_over_por_casa = {k: quitar_margen_potencia([v["over"], v["under"]])[0]
                        for k, v in casas.items()}
     valores = list(p_over_por_casa.values())
@@ -270,7 +331,7 @@ def evaluar_evento(evento):
     disp = statistics.pstdev(valores)
     if disp > MAX_DISPERSION:
         DESCARTES["casas en desacuerdo"] += 1
-        DETALLE.append(f"{partido}: casas en desacuerdo (desv. {disp:.3f} > {MAX_DISPERSION})")
+        DETALLE.append(f"{partido}: línea {linea}, casas en desacuerdo (desv. {disp:.3f} > {MAX_DISPERSION})")
         info["motivo"] = "casas en desacuerdo"
         return None, info
 
@@ -282,11 +343,11 @@ def evaluar_evento(evento):
         mediana = statistics.median(p for p, _ in precios)
         ev = prob * mejor - 1.0
         stake = min(STAKE_MAX, calcular_kelly(prob, mejor))
-        motivo = _motivo_descarte(mejor, ev, stake, mediana)
+        motivo = _motivo_descarte(mejor, ev, stake, mediana, linea)
         if not motivo:
             candidatos.append({
-                "mercado": f"Goles - {lado} {LINEA}", "lado": lado, "prob": prob, "cuota": mejor,
-                "cuota_justa": 1.0 / prob, "ev": ev * 100.0, "stake": stake,
+                "mercado": f"Goles - {lado} {linea}", "lado": lado, "linea": linea, "prob": prob,
+                "cuota": mejor, "cuota_justa": 1.0 / prob, "ev": ev * 100.0, "stake": stake,
                 "casa": casas[casa_key]["titulo"], "referencia": ref, "n_casas": len(casas),
             })
         elif mejor_descartado is None or ev > mejor_descartado[1]:
@@ -295,8 +356,8 @@ def evaluar_evento(evento):
     if not candidatos:
         DESCARTES["sin valor (EV fuera de 4%-12% / cuota / stake)"] += 1
         lado, ev, cuota, motivo = mejor_descartado
-        DETALLE.append(f"{partido}: {len(casas)} casas, mejor opción {lado} @{cuota:.2f} "
-                       f"EV {ev * 100:+.1f}% -> {motivo}")
+        DETALLE.append(f"{partido}: línea {linea}, {len(casas)} casas, mejor opción {lado} "
+                       f"@{cuota:.2f} EV {ev * 100:+.1f}% -> {motivo}")
         info.update(lado=lado, cuota=cuota, ev=ev * 100.0, motivo=motivo)
         return None, info
     pick = max(candidatos, key=lambda c: c["ev"])
@@ -311,15 +372,27 @@ def analizar_evento(evento):
 
 # ------------------------------ CSV ------------------------------------------
 def preparar_csv(archivo=None, campos=None):
+    """Si el archivo tiene columnas de menos, las agrega vacías (sin perder filas).
+    Si el formato es otro, lo guarda con otro nombre."""
     archivo, campos = archivo or ARCHIVO_CSV, campos or CAMPOS
     if not os.path.exists(archivo):
         return
     with open(archivo, newline="", encoding="utf-8") as f:
-        cab = next(csv.reader(f), [])
-    if cab != campos:
-        nuevo = archivo.replace(".csv", f"_formato_antiguo_{datetime.now():%Y%m%d%H%M%S}.csv")
-        os.replace(archivo, nuevo)
-        print(f"[INFO] {archivo} tenía otro formato; guardado como {nuevo}")
+        lector = csv.DictReader(f)
+        cab = lector.fieldnames or []
+        filas = list(lector)
+    if cab == campos:
+        return
+    if cab and set(cab) <= set(campos):
+        for fila in filas:
+            for c in campos:
+                fila.setdefault(c, "")
+        escribir_csv(filas, archivo, campos)
+        print(f"[INFO] {archivo}: columnas nuevas agregadas, {len(filas)} filas conservadas")
+        return
+    nuevo = archivo.replace(".csv", f"_formato_antiguo_{datetime.now():%Y%m%d%H%M%S}.csv")
+    os.replace(archivo, nuevo)
+    print(f"[INFO] {archivo} tenía otro formato; guardado como {nuevo}")
 
 
 def leer_csv(archivo=None):
@@ -349,6 +422,8 @@ def registrar(fila):
 
 # ------------------------- REGISTRO DE TODOS LOS PARTIDOS --------------------
 def fila_sombra(ev, sport, info, ahora, es_pick):
+    est = (probs_otras_lineas(info["p_over"], info["linea"] or LINEA)
+           if info["p_over"] is not None else None)
     return {
         "ID_Evento": ev["id"], "Sport": sport, "Inicio_UTC": _iso(_parse_dt(ev["commence_time"])),
         "Liga": ev.get("sport_title", sport), "Partido": info["partido"],
@@ -359,6 +434,9 @@ def fila_sombra(ev, sport, info, ahora, es_pick):
         "Mejor_EV_%": f"{info['ev']:.2f}" if info["ev"] is not None else "",
         "Motivo": info["motivo"], "Es_Pick": "SI" if es_pick else "NO",
         "Goles_Totales": "", "Over_2.5": "",
+        "P_Over15_Est": f"{est['over15']:.4f}" if est else "",
+        "P_Over35_Est": f"{est['over35']:.4f}" if est else "",
+        "Linea": info["linea"] if info.get("linea") else "", "Over_Linea": "",
     }
 
 
@@ -397,9 +475,17 @@ def _totales_por_evento(sports):
     return totales
 
 
+def _linea_de_mercado(mercado):
+    try:
+        return float(str(mercado).split()[-1])
+    except ValueError:
+        return LINEA
+
+
 def _cerrar_pick(f, goles):
     over = "Over" in f["Mercado"]
-    gana = (goles > LINEA) if over else (goles < LINEA)
+    linea = _linea_de_mercado(f["Mercado"])
+    gana = (goles > linea) if over else (goles < linea)
     stake, cuota = float(f["Stake_%"]), float(f["Cuota"])
     f["Goles_Totales"] = goles
     f["Estado"] = "GANADA" if gana else "PERDIDA"
@@ -409,6 +495,7 @@ def _cerrar_pick(f, goles):
 def _cerrar_sombra(f, goles):
     f["Goles_Totales"] = goles
     f["Over_2.5"] = 1 if goles > LINEA else 0
+    f["Over_Linea"] = 1 if goles > float(f.get("Linea") or LINEA) else 0
 
 
 def aplicar_resultados_manuales(picks, sombra):
@@ -508,25 +595,44 @@ def resumen_picks():
             f"ROI sobre stake: {profit / stake_tot * 100:+.1f}%\nBrier: {brier:.3f} (0.25 = azar)")
 
 
+def _over_linea(f):
+    """1/0 si la línea analizada de ese partido terminó en Over/Under; None si no hay resultado.
+    Filas antiguas (sin columna Linea) analizaban siempre la línea 2.5."""
+    v = f.get("Over_Linea", "")
+    if v in ("0", "1"):
+        return int(v)
+    if f.get("Linea", "") == "" and f.get("Over_2.5", "") in ("0", "1"):
+        return int(f["Over_2.5"])
+    return None
+
+
 def resumen_sombra():
     filas = [f for f in leer_csv(ARCHIVO_SOMBRA)
-             if f["Over_2.5"] in ("0", "1") and f["Prob_Over_Justa"] != ""]
+             if _over_linea(f) is not None and f["Prob_Over_Justa"] != ""]
     if not filas:
         return "<b>PARTIDOS ANALIZADOS</b>\nAún no hay partidos liquidados."
     n = len(filas)
     p = [float(f["Prob_Over_Justa"]) for f in filas]
-    y = [int(f["Over_2.5"]) for f in filas]
+    y = [_over_linea(f) for f in filas]
     brier = sum((pi - yi) ** 2 for pi, yi in zip(p, y)) / n
     tasa = sum(y) / n
     base = tasa * (1 - tasa)
     txt = [f"<b>PARTIDOS ANALIZADOS</b> (n={n})",
            f"P(Over) justa media: {sum(p) / n * 100:.1f}% | Over real: {tasa * 100:.1f}%",
            f"Brier: {brier:.3f} (referencia constante: {base:.3f})"]
+    lineas = Counter((f.get("Linea") or "2.5") for f in filas)
+    txt.append("Líneas analizadas: " + ", ".join(f"{k}x{v}" for k, v in sorted(lineas.items())))
+    for etiqueta, col, umbral in (("Over 1.5", "P_Over15_Est", 2), ("Over 3.5", "P_Over35_Est", 4)):
+        con = [f for f in filas if f.get(col, "") != ""]
+        if con:
+            est_m = sum(float(f[col]) for f in con) / len(con)
+            real = sum(int(f["Goles_Totales"]) >= umbral for f in con) / len(con)
+            txt.append(f"Estimación {etiqueta}: {est_m * 100:.1f}% | real: {real * 100:.1f}% (n={len(con)})")
     cubos = {"EV < 0%": [], "EV 0 a 2%": [], "EV 2 a 4%": [], "EV >= 4%": []}
     for f in filas:
         if not f["Mejor_Cuota"] or f["Mejor_EV_%"] == "":
             continue
-        ev, cuota, over = float(f["Mejor_EV_%"]), float(f["Mejor_Cuota"]), int(f["Over_2.5"])
+        ev, cuota, over = float(f["Mejor_EV_%"]), float(f["Mejor_Cuota"]), _over_linea(f)
         gana = (over == 1) if f["Mejor_Lado"] == "Over" else (over == 0)
         clave = "EV < 0%" if ev < 0 else "EV 0 a 2%" if ev < 2 else "EV 2 a 4%" if ev < 4 else "EV >= 4%"
         cubos[clave].append(cuota - 1.0 if gana else -1.0)
@@ -547,11 +653,47 @@ def resumen(enviar=False):
 
 
 # ------------------------------ ESCANEO --------------------------------------
+def _cuota(p):
+    return f"{1.0 / p:.2f}" if 0.0 < p < 1.0 else "-"
+
+
+def enviar_referencias(lista):
+    """Resumen con las cuotas justas (sin margen) de cada partido analizado.
+    Cada elemento: (inicio, partido, P(Over de la línea analizada), línea)."""
+    if not ENVIAR_REFERENCIAS or not lista:
+        return
+    lista = sorted(lista, key=lambda x: x[0])[:MAX_REFERENCIAS]
+    cab = (f"📋 <b>Cuotas justas de referencia</b>\n"
+           f"✓ = línea con cuotas reales de varias casas. Las demás son ESTIMADAS (Poisson).\n"
+           f"Mínima en {CASA_USUARIO} = justa × {1 + EV_MIN:.2f} (línea ✓) o × {1 + MARGEN_ESTIMACION:.2f} (estimadas).\n")
+    bloques, actual = [], cab
+    for item in lista:
+        inicio, partido, p, *resto = item
+        base = resto[0] if resto and resto[0] else LINEA
+        e = probs_otras_lineas(p, base)
+        est = {1.5: e["over15"], 2.5: e["over25"], 3.5: e["over35"]}
+        est[base] = p
+        partes = []
+        for l in sorted(est):
+            marca = " ✓" if abs(l - base) < 1e-9 else ""
+            partes.append(f"{l}{marca}: O {_cuota(est[l])} / U {_cuota(1 - est[l])}")
+        texto = (f"\n<b>{html.escape(partido)}</b> ({inicio.astimezone(ZONA):%d/%m %H:%M})\n"
+                 + " · ".join(partes) + "\n")
+        if len(actual) + len(texto) > 3500:
+            bloques.append(actual)
+            actual = ""
+        actual += texto
+    bloques.append(actual)
+    for b in bloques:
+        enviar_telegram(b)
+
+
 def escanear():
     ahora = datetime.now(timezone.utc)
     hasta = ahora + timedelta(hours=VENTANA_HORAS)
     ya = {f["ID_Evento"] for f in leer_csv()}
     sombra = {}
+    referencias = []
     enviados = 0
     vistos = 0
     for sport in deportes_activos():
@@ -573,6 +715,8 @@ def escanear():
                 continue
             pick, info = evaluar_evento(ev)
             sombra[ev["id"]] = fila_sombra(ev, sport, info, ahora, pick is not None)
+            if info["p_over"] is not None and info["motivo"] != "casas en desacuerdo":
+                referencias.append((inicio, info["partido"], info["p_over"], info["linea"]))
             if not pick:
                 continue
             partido = f"{ev['home_team']} vs {ev['away_team']}"
@@ -602,6 +746,7 @@ def escanear():
             if enviar_telegram(msg):
                 enviados += 1
     guardar_sombra(sombra)
+    enviar_referencias(referencias)
     for linea in DETALLE[:60]:
         print(f"  - {linea}")
     print(f"[DIAGNÓSTICO] partidos analizados: {vistos} | descartes: {dict(DESCARTES)}")
