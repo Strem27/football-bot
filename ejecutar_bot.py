@@ -30,6 +30,33 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+def _cargar_env(nombre=".env"):
+    """Carga CLAVE=valor de un .env (junto al script o en la carpeta actual) sin pisar
+    las variables que ya estén definidas en el entorno. Acepta 'export', comillas y #."""
+    for carpeta in dict.fromkeys((os.path.dirname(os.path.abspath(__file__)), os.getcwd())):
+        ruta = os.path.join(carpeta, nombre)
+        if not os.path.isfile(ruta):
+            continue
+        with open(ruta, encoding="utf-8-sig") as f:
+            for linea in f:
+                linea = linea.strip()
+                if not linea or linea.startswith("#") or "=" not in linea:
+                    continue
+                clave, valor = linea.split("=", 1)
+                clave = clave.strip().removeprefix("export ").strip()
+                valor = valor.strip()
+                if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in "\"'":
+                    valor = valor[1:-1]
+                if clave:
+                    os.environ.setdefault(clave, valor)
+        return ruta
+    return None
+
+
+_cargar_env()
 
 # ----------------------------- CONFIGURACIÓN ---------------------------------
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
@@ -55,6 +82,7 @@ REANALISIS_HORAS = 12       # no se vuelve a consultar un partido analizado hace
 MIN_CASAS = 5               # mínimo de casas en UNA misma línea para confiar en la prob. justa
 MAX_DISPERSION = 0.035      # si las casas no se ponen de acuerdo (desv. est. de P(Over)), no se juega
 MAX_SOBRE_MEDIANA = 1.12    # cuota que supera 12% a la mediana = probable error/línea vieja
+MAX_EDAD_CUOTA_MIN = 180    # cuotas cuyo last_update es más viejo que esto se ignoran (None = no filtrar)
 CUOTA_MIN = 1.50              # cuota mínima en la línea 2.5
 CUOTA_MIN_OTRAS_LINEAS = 1.20   # en 1.5 / 3.5 las cuotas son más bajas por naturaleza
 EV_MIN = 0.04
@@ -64,11 +92,14 @@ STAKE_MIN = 0.25            # % de banca
 STAKE_MAX = 1.50            # % de banca
 
 CREDITOS_MINIMOS = 10      # si quedan menos créditos, el bot no consulta más
+HORAS_ESPERA_LIQUIDAR = 3   # horas tras el inicio antes de buscar el marcador
+DIAS_PENDIENTE_ALERTA = 3   # la API de scores solo guarda ~3 días: pasado esto un pendiente se pierde
 
 CASA_USUARIO = "Rushbet"    # casa donde apuestas (se muestra en la cuota mínima)
 # Ligas con prórroga/penales: el marcador de la API puede no ser el de los 90 minutos,
 # así que NO se liquidan solas. Quedan en "REVISAR" y tú confirmas los goles en
 # resultados_manuales.csv (una línea por partido: texto del partido,goles en 90 min).
+# OJO: la Champions y la Nations League también tienen prórroga en eliminatorias.
 LIGAS_REVISAR = {"soccer_spain_copa_del_rey"}
 ARCHIVO_MANUAL = "resultados_manuales.csv"
 
@@ -79,6 +110,7 @@ MARGEN_ESTIMACION = 0.08    # colchón provisional para líneas estimadas (hasta
 MAX_REFERENCIAS = 25        # máximo de partidos en el resumen
 
 ZONA = timezone(timedelta(hours=-5))   # hora que se muestra en Telegram (Colombia)
+TELEGRAM_MAX = 3900         # el límite real de Telegram es 4096 caracteres
 
 CAMPOS = [
     "ID_Evento", "Sport", "Fecha_Ejecucion", "Inicio_UTC", "Liga", "Partido", "Mercado",
@@ -91,6 +123,27 @@ CAMPOS_SOMBRA = [
     "Es_Pick", "Goles_Totales", "Over_2.5", "P_Over15_Est", "P_Over35_Est",
     "Linea", "Over_Linea",
 ]
+
+RESTANTES = None            # créditos restantes según la API
+DESCARTES = Counter()       # por qué se descartan los partidos
+DETALLE = []                # una línea por partido descartado
+OBSOLETAS = Counter()       # cuotas ignoradas por antiguas
+
+# Sesión HTTP con reintentos ante errores transitorios (no reintenta 429: es falta de créditos).
+SESION = requests.Session()
+SESION.mount("https://", HTTPAdapter(max_retries=Retry(
+    total=3, backoff_factor=1.0, status_forcelist=(500, 502, 503, 504),
+    allowed_methods=frozenset({"GET", "POST"}))))
+
+
+def _seguro(texto):
+    """Oculta las claves en cualquier texto que se imprima: los mensajes de error de
+    `requests` incluyen la URL completa (con apiKey y el token de Telegram)."""
+    texto = str(texto)
+    for secreto in (ODDS_API_KEY, TELEGRAM_TOKEN):
+        if secreto:
+            texto = texto.replace(secreto, "***")
+    return texto
 
 
 # ------------------------------ MATEMÁTICA -----------------------------------
@@ -122,11 +175,6 @@ def calcular_kelly(prob, cuota, fraccion=KELLY_FRACCION):
     b = cuota - 1.0
     full = (b * prob - (1.0 - prob)) / b
     return max(0.0, full * fraccion * 100.0)
-
-
-RESTANTES = None            # créditos restantes según la API
-DESCARTES = Counter()       # por qué se descartan los partidos
-DETALLE = []                # una línea por partido descartado
 
 
 # ------------------------- LÍNEAS 1.5 / 3.5 (ESTIMADAS) ----------------------
@@ -178,11 +226,11 @@ def _cuota_restante(resp):
 def deportes_activos():
     """Lista de ligas activas (esta llamada no consume créditos)."""
     try:
-        r = requests.get(f"{BASE}/sports/", params={"apiKey": ODDS_API_KEY}, timeout=15)
+        r = SESION.get(f"{BASE}/sports/", params={"apiKey": ODDS_API_KEY}, timeout=15)
         r.raise_for_status()
         activos = {s["key"] for s in r.json() if s.get("active")}
     except Exception as e:
-        print(f"[ERROR] No pude listar deportes: {e}")
+        print(f"[ERROR] No pude listar deportes: {_seguro(e)}")
         return LIGAS
     faltan = [l for l in LIGAS if l not in activos]
     if faltan:
@@ -196,30 +244,30 @@ def listar_eventos(sport, desde, hasta):
     params = {"apiKey": ODDS_API_KEY, "dateFormat": "iso",
               "commenceTimeFrom": _iso(desde), "commenceTimeTo": _iso(hasta)}
     try:
-        r = requests.get(f"{BASE}/sports/{sport}/events/", params=params, timeout=15)
+        r = SESION.get(f"{BASE}/sports/{sport}/events/", params=params, timeout=15)
         if r.status_code != 200:
             print(f"[AVISO] eventos {sport}: HTTP {r.status_code}")
             return None          # None = no se pudo saber; se consulta igual
         _cuota_restante(r)
         return r.json()
     except Exception as e:
-        print(f"[ERROR] eventos {sport}: {e}")
+        print(f"[ERROR] eventos {sport}: {_seguro(e)}")
         return None
 
 
 def consultar_cuotas(sport, desde, hasta):
+    global RESTANTES
     params = {
         "apiKey": ODDS_API_KEY, "regions": REGIONES, "markets": "totals",
         "oddsFormat": "decimal", "dateFormat": "iso",
         "commenceTimeFrom": _iso(desde), "commenceTimeTo": _iso(hasta),
     }
     try:
-        r = requests.get(f"{BASE}/sports/{sport}/odds/", params=params, timeout=20)
+        r = SESION.get(f"{BASE}/sports/{sport}/odds/", params=params, timeout=20)
     except Exception as e:
-        print(f"[ERROR] {sport}: {e}")
+        print(f"[ERROR] {sport}: {_seguro(e)}")
         return []
     if r.status_code == 429:
-        global RESTANTES
         RESTANTES = 0
         print(f"[AVISO] {sport}: sin créditos de The Odds API")
         return []
@@ -230,38 +278,79 @@ def consultar_cuotas(sport, desde, hasta):
         print(f"[ERROR] {sport}: HTTP {r.status_code}")
         return []
     _cuota_restante(r)
-    return r.json()
+    try:
+        return r.json()
+    except ValueError:
+        print(f"[ERROR] {sport}: respuesta no es JSON válido")
+        return []
+
+
+def _trozos(mensaje, limite=TELEGRAM_MAX):
+    """Parte el mensaje por líneas (para no cortar una etiqueta HTML a la mitad)."""
+    if len(mensaje) <= limite:
+        return [mensaje]
+    trozos, actual = [], ""
+    for linea in mensaje.split("\n"):
+        if actual and len(actual) + len(linea) + 1 > limite:
+            trozos.append(actual)
+            actual = ""
+        actual += linea + "\n"
+    if actual.strip():
+        trozos.append(actual)
+    return trozos
 
 
 def enviar_telegram(mensaje):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Faltan TELEGRAM_TOKEN / CHAT_ID")
         return False
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": CHAT_ID, "text": mensaje, "parse_mode": "HTML"}, timeout=10)
-        return r.status_code == 200
-    except Exception as e:
-        print(f"Error Telegram: {e}")
-        return False
+    ok = True
+    for trozo in _trozos(mensaje):
+        try:
+            r = SESION.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": CHAT_ID, "text": trozo, "parse_mode": "HTML"}, timeout=10)
+            if r.status_code != 200:
+                print(f"[ERROR] Telegram HTTP {r.status_code}: {_seguro(r.text[:200])}")
+                ok = False
+        except Exception as e:
+            print(f"[ERROR] Telegram: {_seguro(e)}")
+            ok = False
+    return ok
 
 
 # ------------------------------ ANÁLISIS -------------------------------------
-def extraer_totales(evento):
+def _es_obsoleta(txt, ahora):
+    """True si la cuota se actualizó hace más de MAX_EDAD_CUOTA_MIN minutos."""
+    if MAX_EDAD_CUOTA_MIN is None or not txt:
+        return False
+    try:
+        return ahora - _parse_dt(txt) > timedelta(minutes=MAX_EDAD_CUOTA_MIN)
+    except ValueError:
+        return False
+
+
+def extraer_totales(evento, ahora=None):
     """{linea: {casa: {'titulo', 'over', 'under'}}} para las líneas de LINEAS_VALIDAS,
-    con ambos lados de la MISMA casa."""
+    con ambos lados de la MISMA casa. Descarta cuotas desactualizadas."""
+    ahora = ahora or datetime.now(timezone.utc)
     out = {}
     for b in evento.get("bookmakers", []):
         for m in b.get("markets", []):
             if m.get("key") != "totals":
+                continue
+            if _es_obsoleta(m.get("last_update") or b.get("last_update"), ahora):
+                OBSOLETAS[b.get("key", "?")] += 1
                 continue
             por_linea = {}
             for o in m.get("outcomes", []):
                 pt = o.get("point")
                 if pt is None:
                     continue
-                pt = float(pt)
+                try:
+                    pt = float(pt)
+                except (TypeError, ValueError):
+                    continue
                 if not any(abs(pt - l) < 1e-9 for l in LINEAS_VALIDAS):
                     continue
                 n = str(o.get("name", "")).lower()
@@ -269,9 +358,13 @@ def extraer_totales(evento):
                     por_linea.setdefault(pt, {})[n] = o.get("price")
             for pt, d in por_linea.items():
                 over, under = d.get("over"), d.get("under")
-                if over and under and over > 1.0 and under > 1.0:
+                try:
+                    over, under = float(over), float(under)
+                except (TypeError, ValueError):
+                    continue
+                if over > 1.0 and under > 1.0:
                     out.setdefault(pt, {})[b["key"]] = {
-                        "titulo": b.get("title", b["key"]), "over": float(over), "under": float(under)}
+                        "titulo": b.get("title", b["key"]), "over": over, "under": under}
     return out
 
 
@@ -305,10 +398,10 @@ def _motivo_descarte(cuota, ev, stake, mediana, linea=LINEA):
     return ", ".join(m)
 
 
-def evaluar_evento(evento):
+def evaluar_evento(evento, ahora=None):
     """Devuelve (pick o None, info). 'info' describe el análisis aunque no haya pick."""
     partido = f"{evento.get('home_team', '?')} vs {evento.get('away_team', '?')}"
-    totales = extraer_totales(evento)
+    totales = extraer_totales(evento, ahora)
     linea = elegir_linea(totales)
     info = {"partido": partido, "linea": linea,
             "n_casas": len(totales[linea]) if linea else max((len(c) for c in totales.values()), default=0),
@@ -355,7 +448,7 @@ def evaluar_evento(evento):
             mejor_descartado = (lado, ev, mejor, motivo)
 
     if not candidatos:
-        DESCARTES["sin valor (EV fuera de 4%-12% / cuota / stake)"] += 1
+        DESCARTES[f"sin valor (EV fuera de {EV_MIN * 100:.0f}%-{EV_MAX * 100:.0f}% / cuota / stake)"] += 1
         lado, ev, cuota, motivo = mejor_descartado
         DETALLE.append(f"{partido}: línea {linea}, {len(casas)} casas, mejor opción {lado} "
                        f"@{cuota:.2f} EV {ev * 100:+.1f}% -> {motivo}")
@@ -372,13 +465,15 @@ def analizar_evento(evento):
 
 
 # ------------------------------ CSV ------------------------------------------
+# Lectura con utf-8-sig: Excel guarda los CSV con BOM y con utf-8 normal el BOM
+# se pegaría al primer nombre de columna ("﻿ID_Evento").
 def preparar_csv(archivo=None, campos=None):
     """Si el archivo tiene columnas de menos, las agrega vacías (sin perder filas).
     Si el formato es otro, lo guarda con otro nombre."""
     archivo, campos = archivo or ARCHIVO_CSV, campos or CAMPOS
     if not os.path.exists(archivo):
         return
-    with open(archivo, newline="", encoding="utf-8") as f:
+    with open(archivo, newline="", encoding="utf-8-sig") as f:
         lector = csv.DictReader(f)
         cab = lector.fieldnames or []
         filas = list(lector)
@@ -387,7 +482,8 @@ def preparar_csv(archivo=None, campos=None):
     if cab and set(cab) <= set(campos):
         for fila in filas:
             for c in campos:
-                fila.setdefault(c, "")
+                if fila.get(c) is None:
+                    fila[c] = ""
         escribir_csv(filas, archivo, campos)
         print(f"[INFO] {archivo}: columnas nuevas agregadas, {len(filas)} filas conservadas")
         return
@@ -400,21 +496,25 @@ def leer_csv(archivo=None):
     archivo = archivo or ARCHIVO_CSV
     if not os.path.exists(archivo):
         return []
-    with open(archivo, newline="", encoding="utf-8") as f:
+    with open(archivo, newline="", encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 
 def escribir_csv(filas, archivo=None, campos=None):
+    """Escritura atómica: se escribe a un temporal y se reemplaza, así un corte a mitad
+    de la escritura no deja el historial truncado."""
     archivo, campos = archivo or ARCHIVO_CSV, campos or CAMPOS
-    with open(archivo, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=campos)
+    tmp = archivo + ".tmp"
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=campos, extrasaction="ignore")
         w.writeheader()
         w.writerows(filas)
+    os.replace(tmp, archivo)
 
 
 def registrar(fila):
     existe = os.path.exists(ARCHIVO_CSV)
-    with open(ARCHIVO_CSV, "a", newline="", encoding="utf-8") as f:
+    with open(ARCHIVO_CSV, "a", newline="", encoding="utf-8-sig" if not existe else "utf-8") as f:
         w = csv.DictWriter(f, fieldnames=CAMPOS)
         if not existe:
             w.writeheader()
@@ -463,16 +563,23 @@ def _totales_por_evento(sports):
     totales = {}
     for sport in sports:
         try:
-            r = requests.get(f"{BASE}/sports/{sport}/scores/",
-                             params={"apiKey": ODDS_API_KEY, "daysFrom": 3, "dateFormat": "iso"},
-                             timeout=15)
+            r = SESION.get(f"{BASE}/sports/{sport}/scores/",
+                           params={"apiKey": ODDS_API_KEY, "daysFrom": 3, "dateFormat": "iso"},
+                           timeout=15)
             if r.status_code != 200:
+                print(f"[AVISO] scores {sport}: HTTP {r.status_code}")
                 continue
-            for ev in r.json():
-                if ev.get("completed") and ev.get("scores"):
-                    totales[ev["id"]] = sum(int(s["score"]) for s in ev["scores"])
+            datos = r.json()
         except Exception as e:
-            print(f"[ERROR] scores {sport}: {e}")
+            print(f"[ERROR] scores {sport}: {_seguro(e)}")
+            continue
+        for ev in datos:
+            # Un evento mal formado ya no descarta los de toda la liga.
+            try:
+                if ev.get("completed") and ev.get("scores"):
+                    totales[ev["id"]] = sum(int(float(s["score"])) for s in ev["scores"])
+            except (KeyError, TypeError, ValueError):
+                print(f"[AVISO] marcador ilegible en {ev.get('id', '?')}")
     return totales
 
 
@@ -500,29 +607,35 @@ def _cerrar_sombra(f, goles):
 
 
 def aplicar_resultados_manuales(picks, sombra):
-    """Lee resultados_manuales.csv (texto del partido,goles_90min) y cierra o corrige partidos de copa."""
+    """Lee resultados_manuales.csv (texto del partido,goles_90min) y cierra o corrige partidos de copa.
+    Devuelve cuántas filas CAMBIARON (repetir la misma línea no cuenta)."""
     if not os.path.exists(ARCHIVO_MANUAL):
         return 0
     n = 0
-    with open(ARCHIVO_MANUAL, newline="", encoding="utf-8") as fh:
+    with open(ARCHIVO_MANUAL, newline="", encoding="utf-8-sig") as fh:
         for fila in csv.reader(fh):
             if len(fila) < 2 or not fila[1].strip().isdigit():
                 continue
             texto, goles = fila[0].strip().lower(), int(fila[1])
             if not texto:
                 continue
-            # Solo ligas de LIGAS_REVISAR; también corrige partidos ya liquidados con el
-            # marcador de la API (idempotente: repetir la misma línea no cambia nada).
+            coincidencias = 0
             for f in picks:
                 if f["Sport"] in LIGAS_REVISAR and f["Estado"] != "PENDIENTE" \
                         and texto in f["Partido"].lower():
+                    coincidencias += 1
+                    antes = (f["Estado"], str(f["Goles_Totales"]))
                     _cerrar_pick(f, goles)
-                    n += 1
+                    n += antes != (f["Estado"], str(f["Goles_Totales"]))
             for f in sombra:
                 if f["Sport"] in LIGAS_REVISAR and f["Goles_Totales"] != "" \
                         and texto in f["Partido"].lower():
+                    coincidencias += 1
+                    antes = (str(f["Goles_Totales"]), str(f["Over_Linea"]))
                     _cerrar_sombra(f, goles)
-                    n += 1
+                    n += antes != (str(f["Goles_Totales"]), str(f["Over_Linea"]))
+            if not coincidencias:
+                print(f"[AVISO] {ARCHIVO_MANUAL}: '{texto}' no coincide con ningún partido de copa liquidado/por revisar")
     return n
 
 
@@ -531,7 +644,7 @@ def liquidar_pendientes():
     Las ligas de LIGAS_REVISAR (copas con prórroga) quedan en REVISAR hasta que
     confirmes los goles de los 90 minutos en resultados_manuales.csv."""
     ahora = datetime.now(timezone.utc)
-    espera = timedelta(hours=3)
+    espera = timedelta(hours=HORAS_ESPERA_LIQUIDAR)
     picks, sombra = leer_csv(), leer_csv(ARCHIVO_SOMBRA)
 
     manuales = aplicar_resultados_manuales(picks, sombra)
@@ -573,27 +686,40 @@ def liquidar_pendientes():
         escribir_csv(sombra, ARCHIVO_SOMBRA, CAMPOS_SOMBRA)
     print(f"[INFO] liquidados: {cambios_p} picks, {cambios_s} partidos analizados, "
           f"{manuales} manuales, {len(revisar)} por revisar")
+
+    # Picks que la API ya no puede devolver (scores solo guarda ~3 días): liquidar a mano.
+    limite = timedelta(days=DIAS_PENDIENTE_ALERTA)
+    atascados = [f for f in picks if f["Estado"] == "PENDIENTE"
+                 and _parse_dt(f["Inicio_UTC"]) + limite < ahora]
+    for f in atascados:
+        print(f"[AVISO] pick pendiente > {DIAS_PENDIENTE_ALERTA} días (aplazado o fuera de la API): "
+              f"{f['Partido']} ({f['Inicio_UTC']}). Ciérralo a mano en {ARCHIVO_CSV}.")
+
     if revisar:
-        lineas = "\n".join(f"• {p}: la API dice {g} goles" for p, g in revisar)
+        lineas = "\n".join(f"• {html.escape(p)}: la API dice {g} goles" for p, g in revisar)
         enviar_telegram("📝 <b>Copa: confirma los goles de los 90 minutos</b>\n" + lineas +
                         f"\nAgrega una línea por partido en {ARCHIVO_MANUAL}: "
                         "<code>texto del partido,goles</code>")
 
 
 # ------------------------------ RESÚMENES ------------------------------------
+# Ojo: estos textos se envían con parse_mode HTML, así que no deben llevar "<" ni ">" sueltos.
 def resumen_picks():
     cerradas = [f for f in leer_csv() if f["Estado"] in ("GANADA", "PERDIDA")]
+    pendientes = sum(f["Estado"] == "PENDIENTE" for f in leer_csv())
     if not cerradas:
-        return "<b>PICKS</b>\nAún no hay picks liquidados."
+        return f"<b>PICKS</b>\nAún no hay picks liquidados. Pendientes: {pendientes}."
     n = len(cerradas)
     ganadas = sum(f["Estado"] == "GANADA" for f in cerradas)
     stake_tot = sum(float(f["Stake_%"]) for f in cerradas)
     profit = sum(float(f["Profit_%Banca"]) for f in cerradas)
+    roi = profit / stake_tot * 100 if stake_tot else 0.0
     brier = sum((float(f["Prob_Justa"]) - (f["Estado"] == "GANADA")) ** 2 for f in cerradas) / n
     p_media = sum(float(f["Prob_Justa"]) for f in cerradas) / n
-    return (f"<b>PICKS</b>\nLiquidados: {n} | aciertos: {ganadas} ({ganadas / n * 100:.1f}%) "
-            f"| prob. media esperada: {p_media * 100:.1f}%\nProfit: {profit:+.2f}% de banca | "
-            f"ROI sobre stake: {profit / stake_tot * 100:+.1f}%\nBrier: {brier:.3f} (0.25 = azar)")
+    return (f"<b>PICKS</b>\nLiquidados: {n} | pendientes: {pendientes} | aciertos: {ganadas} "
+            f"({ganadas / n * 100:.1f}%) | prob. media esperada: {p_media * 100:.1f}%\n"
+            f"Profit: {profit:+.2f}% de banca | ROI sobre stake: {roi:+.1f}%\n"
+            f"Brier: {brier:.3f} (0.25 = azar)")
 
 
 def _over_linea(f):
@@ -624,25 +750,26 @@ def resumen_sombra():
     lineas = Counter((f.get("Linea") or "2.5") for f in filas)
     txt.append("Líneas analizadas: " + ", ".join(f"{k}x{v}" for k, v in sorted(lineas.items())))
     for etiqueta, col, umbral in (("Over 1.5", "P_Over15_Est", 2), ("Over 3.5", "P_Over35_Est", 4)):
-        con = [f for f in filas if f.get(col, "") != ""]
+        con = [f for f in filas if f.get(col, "") != "" and str(f["Goles_Totales"]).isdigit()]
         if con:
             est_m = sum(float(f[col]) for f in con) / len(con)
             real = sum(int(f["Goles_Totales"]) >= umbral for f in con) / len(con)
             txt.append(f"Estimación {etiqueta}: {est_m * 100:.1f}% | real: {real * 100:.1f}% (n={len(con)})")
-    cubos = {"EV < 0%": [], "EV 0 a 2%": [], "EV 2 a 4%": [], "EV >= 4%": []}
+    cubos = {"EV menor a 0%": [], "EV 0 a 2%": [], "EV 2 a 4%": [], "EV de 4% o más": []}
     for f in filas:
         if not f["Mejor_Cuota"] or f["Mejor_EV_%"] == "":
             continue
         ev, cuota, over = float(f["Mejor_EV_%"]), float(f["Mejor_Cuota"]), _over_linea(f)
         gana = (over == 1) if f["Mejor_Lado"] == "Over" else (over == 0)
-        clave = "EV < 0%" if ev < 0 else "EV 0 a 2%" if ev < 2 else "EV 2 a 4%" if ev < 4 else "EV >= 4%"
+        clave = ("EV menor a 0%" if ev < 0 else "EV 0 a 2%" if ev < 2
+                 else "EV 2 a 4%" if ev < 4 else "EV de 4% o más")
         cubos[clave].append(cuota - 1.0 if gana else -1.0)
     txt.append("ROI hipotético de la mejor opción (1 unidad fija), por EV al analizar:")
     for k, v in cubos.items():
         if v:
             txt.append(f"  {k}: n={len(v)}, ROI {sum(v) / len(v) * 100:+.1f}%")
     txt.append("<i>Si el ROI no sube al subir el EV, el filtro no tiene señal. "
-               "Con n < 200 todo esto es ruido.</i>")
+               "Con menos de 200 partidos todo esto es ruido.</i>")
     return "\n".join(txt)
 
 
@@ -680,7 +807,7 @@ def enviar_referencias(lista):
             partes.append(f"{l}{marca}: O {_cuota(est[l])} / U {_cuota(1 - est[l])}")
         texto = (f"\n<b>{html.escape(partido)}</b> ({inicio.astimezone(ZONA):%d/%m %H:%M})\n"
                  + " · ".join(partes) + "\n")
-        if len(actual) + len(texto) > 3500:
+        if len(actual) + len(texto) > TELEGRAM_MAX - 400:
             bloques.append(actual)
             actual = ""
         actual += texto
@@ -703,69 +830,79 @@ def _analizados_recientes(ahora):
     return out
 
 
+def _mensaje_pick(ev, sport, partido, inicio, pick):
+    return (
+        f"⚡ <b>PICK GOLES</b>\n\n"
+        f"🏆 {html.escape(ev.get('sport_title', sport))}\n"
+        f"🏟️ {html.escape(partido)}\n"
+        f"🕒 {inicio.astimezone(ZONA):%d/%m %H:%M} (hora Colombia)\n"
+        f"📌 <b>{pick['mercado']}</b> @ <b>{pick['cuota']:.2f}</b> ({html.escape(pick['casa'])})\n"
+        f"📊 Prob. justa: {pick['prob'] * 100:.1f}% (cuota justa {pick['cuota_justa']:.2f}) "
+        f"| EV: +{pick['ev']:.1f}%\n"
+        f"🧮 Referencia: {pick['referencia']}\n"
+        f"🎯 Cuota mínima en {CASA_USUARIO} (EV ≥ {EV_MIN * 100:.0f}%): "
+        f"<b>{(1 + EV_MIN) / pick['prob']:.2f}</b> (si paga menos, no hay valor)\n"
+        f"🛡️ Stake (Kelly {KELLY_FRACCION}): <b>{pick['stake']:.2f}% de la banca</b>"
+    )
+
+
 def escanear():
     ahora = datetime.now(timezone.utc)
     hasta = ahora + timedelta(hours=VENTANA_HORAS)
-    ya = {f["ID_Evento"] for f in leer_csv()}
-    omitir = ya | _analizados_recientes(ahora)
+    omitir = {f["ID_Evento"] for f in leer_csv()} | _analizados_recientes(ahora)
     sombra = {}
     referencias = []
     enviados = 0
     vistos = 0
-    for sport in deportes_activos():
-        if RESTANTES is not None and RESTANTES <= CREDITOS_MINIMOS:
-            print(f"[AVISO] Quedan {RESTANTES} créditos: me detengo para no agotarlos.")
-            break
-        eventos = listar_eventos(sport, ahora, hasta)
-        if eventos is not None:
-            nuevos = [e for e in eventos if e["id"] not in omitir]
-            if not nuevos:
-                print(f"[SKIP] {sport}: sin partidos nuevos en {VENTANA_HORAS} h "
-                      f"(o analizados hace < {REANALISIS_HORAS} h) (0 créditos gastados)")
-                continue
-        for ev in consultar_cuotas(sport, ahora, hasta):
-            if ev["id"] in omitir:
-                continue
-            vistos += 1
-            inicio = _parse_dt(ev["commence_time"])
-            if inicio <= ahora:
-                continue
-            pick, info = evaluar_evento(ev)
-            sombra[ev["id"]] = fila_sombra(ev, sport, info, ahora, pick is not None)
-            if info["p_over"] is not None and info["motivo"] != "casas en desacuerdo":
-                referencias.append((inicio, info["partido"], info["p_over"], info["linea"]))
-            if not pick:
-                continue
-            partido = f"{ev['home_team']} vs {ev['away_team']}"
-            registrar({
-                "ID_Evento": ev["id"], "Sport": sport, "Fecha_Ejecucion": f"{ahora:%Y-%m-%d %H:%M}",
-                "Inicio_UTC": _iso(inicio), "Liga": ev.get("sport_title", sport), "Partido": partido,
-                "Mercado": pick["mercado"], "Casa": pick["casa"], "Cuota": f"{pick['cuota']:.2f}",
-                "Cuota_Justa": f"{pick['cuota_justa']:.3f}", "Prob_Justa": f"{pick['prob']:.4f}",
-                "EV_%": f"{pick['ev']:.2f}", "Stake_%": f"{pick['stake']:.2f}",
-                "Referencia": pick["referencia"], "N_Casas": pick["n_casas"],
-                "Estado": "PENDIENTE", "Goles_Totales": "", "Profit_%Banca": "",
-            })
-            ya.add(ev["id"])
-            msg = (
-                f"⚡ <b>PICK GOLES</b>\n\n"
-                f"🏆 {html.escape(ev.get('sport_title', sport))}\n"
-                f"🏟️ {html.escape(partido)}\n"
-                f"🕒 {inicio.astimezone(ZONA):%d/%m %H:%M} (hora Colombia)\n"
-                f"📌 <b>{pick['mercado']}</b> @ <b>{pick['cuota']:.2f}</b> ({html.escape(pick['casa'])})\n"
-                f"📊 Prob. justa: {pick['prob'] * 100:.1f}% (cuota justa {pick['cuota_justa']:.2f}) "
-                f"| EV: +{pick['ev']:.1f}%\n"
-                f"🧮 Referencia: {pick['referencia']}\n"
-                f"🎯 Cuota mínima en {CASA_USUARIO} (EV ≥ {EV_MIN * 100:.0f}%): "
-                f"<b>{(1 + EV_MIN) / pick['prob']:.2f}</b> (si paga menos, no hay valor)\n"
-                f"🛡️ Stake (Kelly {KELLY_FRACCION}): <b>{pick['stake']:.2f}% de la banca</b>"
-            )
-            if enviar_telegram(msg):
-                enviados += 1
-    guardar_sombra(sombra)
+    try:
+        for sport in deportes_activos():
+            if RESTANTES is not None and RESTANTES <= CREDITOS_MINIMOS:
+                print(f"[AVISO] Quedan {RESTANTES} créditos: me detengo para no agotarlos.")
+                break
+            eventos = listar_eventos(sport, ahora, hasta)
+            if eventos is not None:
+                nuevos = [e for e in eventos if e.get("id") not in omitir]
+                if not nuevos:
+                    print(f"[SKIP] {sport}: sin partidos nuevos en {VENTANA_HORAS} h "
+                          f"(o analizados hace < {REANALISIS_HORAS} h) (0 créditos gastados)")
+                    continue
+            for ev in consultar_cuotas(sport, ahora, hasta):
+                try:
+                    if ev["id"] in omitir:
+                        continue
+                    inicio = _parse_dt(ev["commence_time"])
+                    if inicio <= ahora:
+                        continue
+                    vistos += 1
+                    pick, info = evaluar_evento(ev, ahora)
+                    sombra[ev["id"]] = fila_sombra(ev, sport, info, ahora, pick is not None)
+                    if info["p_over"] is not None and info["motivo"] != "casas en desacuerdo":
+                        referencias.append((inicio, info["partido"], info["p_over"], info["linea"]))
+                    if not pick:
+                        continue
+                    partido = f"{ev['home_team']} vs {ev['away_team']}"
+                    registrar({
+                        "ID_Evento": ev["id"], "Sport": sport, "Fecha_Ejecucion": f"{ahora:%Y-%m-%d %H:%M}",
+                        "Inicio_UTC": _iso(inicio), "Liga": ev.get("sport_title", sport), "Partido": partido,
+                        "Mercado": pick["mercado"], "Casa": pick["casa"], "Cuota": f"{pick['cuota']:.2f}",
+                        "Cuota_Justa": f"{pick['cuota_justa']:.3f}", "Prob_Justa": f"{pick['prob']:.4f}",
+                        "EV_%": f"{pick['ev']:.2f}", "Stake_%": f"{pick['stake']:.2f}",
+                        "Referencia": pick["referencia"], "N_Casas": pick["n_casas"],
+                        "Estado": "PENDIENTE", "Goles_Totales": "", "Profit_%Banca": "",
+                    })
+                    omitir.add(ev["id"])
+                    if enviar_telegram(_mensaje_pick(ev, sport, partido, inicio, pick)):
+                        enviados += 1
+                except Exception as e:      # un partido raro no debe tumbar todo el escaneo
+                    print(f"[ERROR] evento {ev.get('id', '?')} ({sport}): {_seguro(e)}")
+    finally:
+        # Se guarda siempre, aunque algo falle a mitad del escaneo.
+        guardar_sombra(sombra)
     enviar_referencias(referencias)
     for linea in DETALLE[:60]:
         print(f"  - {linea}")
+    if OBSOLETAS:
+        print(f"[INFO] cuotas ignoradas por antiguas (> {MAX_EDAD_CUOTA_MIN} min): {dict(OBSOLETAS)}")
     print(f"[DIAGNÓSTICO] partidos analizados: {vistos} | descartes: {dict(DESCARTES)}")
     print(f"=== FIN: {enviados} alertas enviadas ===")
 
