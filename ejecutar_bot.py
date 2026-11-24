@@ -21,6 +21,7 @@ Uso:
 Variables de entorno: ODDS_API_KEY, TELEGRAM_TOKEN, CHAT_ID
 """
 import csv
+import difflib
 import html
 import math
 import os
@@ -229,15 +230,24 @@ def _cuota_restante(resp):
 def deportes_activos():
     """Lista de ligas activas (esta llamada no consume créditos)."""
     try:
-        r = SESION.get(f"{BASE}/sports/", params={"apiKey": ODDS_API_KEY}, timeout=15)
+        # all=true incluye las ligas fuera de temporada, para distinguir "inactiva" de "clave que no existe"
+        r = SESION.get(f"{BASE}/sports/", params={"apiKey": ODDS_API_KEY, "all": "true"}, timeout=15)
         r.raise_for_status()
-        activos = {s["key"] for s in r.json() if s.get("active")}
+        todas = {s["key"]: bool(s.get("active")) for s in r.json()}
     except Exception as e:
         print(f"[ERROR] No pude listar deportes: {_seguro(e)}")
         return LIGAS
+    activos = {k for k, v in todas.items() if v}
     faltan = [l for l in LIGAS if l not in activos]
     if faltan:
         print(f"[INFO] Ligas sin partidos/inactivas o con clave inválida: {faltan}")
+        futbol = [k for k in todas if k.startswith("soccer_")]
+        for l in faltan:
+            if l in todas:
+                print(f"       - {l}: existe pero está inactiva (fuera de temporada)")
+            else:
+                parecidas = difflib.get_close_matches(l, futbol, n=3, cutoff=0.5)
+                print(f"       - {l}: la clave NO existe en la API. Parecidas: {parecidas or 'ninguna'}")
     return [l for l in LIGAS if l in activos]
 
 
