@@ -71,6 +71,9 @@ LIGAS = [
     "soccer_epl", "soccer_spain_la_liga", "soccer_italy_serie_a", "soccer_germany_bundesliga",
     "soccer_france_ligue_one", "soccer_uefa_champs_league", "soccer_uefa_nations_league",
     "soccer_efl_champ", "soccer_spain_copa_del_rey",
+    # Añadidas tras el backtest (sección G): CLV positivo. Experimento: si el CLV real no se
+    # confirma tras unas semanas, quitarlas. Si una clave no existe, deportes_activos() la avisa.
+    "soccer_belgium_first_div", "soccer_turkey_super_league", "soccer_france_ligue_two",
 ]
 REGIONES = "eu,uk"          # Pinnacle viene en "eu". Costo = regiones x mercados por llamada
 CASA_REFERENCIA = "pinnacle"
