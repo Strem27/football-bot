@@ -1,4 +1,4 @@
-ID_Evento,Sport,Inicio_UTC,Liga,Partido,Ultima_Consulta,N_Casas,Prob_Over_Justa,Referencia,Mejor_Lado,Mejor_Cuota,Mejor_EV_%,Motivo,Es_Pick,Goles_Totales,Over_2.5,P_Over15_Est,P_Over35_Est,Linea,Over_Linea
+﻿ID_Evento,Sport,Inicio_UTC,Liga,Partido,Ultima_Consulta,N_Casas,Prob_Over_Justa,Referencia,Mejor_Lado,Mejor_Cuota,Mejor_EV_%,Motivo,Es_Pick,Goles_Totales,Over_2.5,P_Over15_Est,P_Over35_Est,Linea,Over_Linea
 dcee36f9b8a9989972b6d4ddde76c4c7,soccer_spain_la_liga,2026-11-20T20:00:00Z,La Liga - Spain,Athletic Bilbao vs Espanyol,2026-11-20 07:59,17,0.5360,Pinnacle,Under,2.24,3.95,EV < 4%,NO,1,0,,,,
 cae480fb1195f0032554a268cb80eb44,soccer_germany_bundesliga,2026-11-20T19:30:00Z,Bundesliga - Germany,Bayern Munich vs 1. FC Köln,2026-11-20 07:59,3,,,,,,pocas casas,NO,2,0,,,,
 5dcc9d2b0da87770a4f49e924275be39,soccer_france_ligue_one,2026-11-20T19:45:00Z,Ligue 1 - France,Troyes vs Le Havre,2026-11-20 07:59,18,0.5027,Pinnacle,Over,1.96,-1.47,EV < 4%,NO,4,1,,,,
@@ -56,6 +56,23 @@ e22f82b10fe71d230248b88fef87e58f,soccer_italy_serie_a,2026-11-22T19:45:00Z,Serie
 8e6ee05b6ac28dc2357f72b9f5a0643e,soccer_france_ligue_one,2026-11-22T16:15:00Z,Ligue 1 - France,Lorient vs Rennes,2026-11-22 07:42,16,0.4684,mediana de 16 casas,Over,2.14,0.25,EV < 4%,NO,2,0,0.7224,0.2527,2.5,0
 98fae24771271c96d5dd364e535405d2,soccer_france_ligue_one,2026-11-22T19:45:00Z,Ligue 1 - France,Marseille vs Le Mans FC,2026-11-22 07:42,11,0.4139,mediana de 11 casas,Under,1.69,-0.96,EV < 4%,NO,5,1,0.8382,0.4139,3.5,1
 9176cbaec3565e688e603baec257e246,soccer_efl_champ,2026-11-22T12:00:00Z,Championship,Burnley vs Blackburn Rovers,2026-11-22 07:42,17,0.5294,Pinnacle,Under,2.10,-1.18,EV < 4%,NO,4,1,0.7681,0.3070,2.5,1
-aa77e2a08a1a003b0bbb62a5f8e8ae42,soccer_epl,2026-11-23T20:00:00Z,EPL,Brentford vs Everton,2026-11-22 22:10,20,0.5312,mediana de 20 casas,Over,1.90,0.93,EV < 4%,NO,,,0.7694,0.3087,2.5,
-afae1c9d986e4ab2200dc9bd44b6b6c4,soccer_spain_la_liga,2026-11-23T20:00:00Z,La Liga - Spain,Levante vs Elche CF,2026-11-22 22:10,14,0.5690,mediana de 14 casas,Over,1.73,-1.56,EV < 4%,NO,,,0.7956,0.3450,2.5,
-99776445d5a5f4ed008f9a6d6a1495b7,soccer_italy_serie_a,2026-11-23T19:45:00Z,Serie A - Italy,Monza vs Fiorentina,2026-11-22 22:10,11,0.5980,mediana de 11 casas,Over,1.67,-0.14,EV < 4%,NO,,,0.8147,0.3743,2.5,
+aa77e2a08a1a003b0bbb62a5f8e8ae42,soccer_epl,2026-11-23T20:00:00Z,EPL,Brentford vs Everton,2026-11-22 22:10,20,0.5312,mediana de 20 casas,Over,1.90,0.93,EV < 4%,NO,4,1,0.7694,0.3087,2.5,1
+afae1c9d986e4ab2200dc9bd44b6b6c4,soccer_spain_la_liga,2026-11-23T20:00:00Z,La Liga - Spain,Levante vs Elche CF,2026-11-22 22:10,14,0.5690,mediana de 14 casas,Over,1.73,-1.56,EV < 4%,NO,2,0,0.7956,0.3450,2.5,0
+99776445d5a5f4ed008f9a6d6a1495b7,soccer_italy_serie_a,2026-11-23T19:45:00Z,Serie A - Italy,Monza vs Fiorentina,2026-11-22 22:10,11,0.5980,mediana de 11 casas,Over,1.67,-0.14,EV < 4%,NO,3,1,0.8147,0.3743,2.5,1
+e422af92d1fc06c0a330838c1c2f2e08,soccer_uefa_champs_league,2026-11-24T17:45:00Z,UEFA Champions League,Galatasaray vs Aston Villa,2026-11-24 06:12,12,0.4484,mediana de 12 casas,Under,1.79,-1.26,EV < 4%,NO,,,0.8566,0.4484,3.5,
+50b80f3ebd38bf63663b11ae0afc575b,soccer_uefa_champs_league,2026-11-24T17:45:00Z,UEFA Champions League,Bodø/Glimt vs LASK,2026-11-24 06:12,12,0.5575,mediana de 12 casas,Over,1.78,-0.77,EV < 4%,NO,,,0.9050,0.5575,3.5,
+ba719e378ac366262013bdb51a06aa6f,soccer_uefa_champs_league,2026-11-24T20:00:00Z,UEFA Champions League,Como vs AEK Athens,2026-11-24 06:12,17,0.5014,Pinnacle,Under,2.04,1.72,EV < 4%,NO,,,0.8818,0.5014,3.5,
+aee4e3c225603397ab52de3d066b566b,soccer_uefa_champs_league,2026-11-24T20:00:00Z,UEFA Champions League,Arsenal vs Borussia Dortmund,2026-11-24 06:12,15,0.5676,mediana de 15 casas,Over,1.77,0.47,EV < 4%,NO,,,0.7947,0.3436,2.5,
+9a2ebad454db4ab3d53b89e96c79847a,soccer_uefa_champs_league,2026-11-24T20:00:00Z,UEFA Champions League,Feyenoord vs Porto,2026-11-24 06:12,13,0.5857,mediana de 13 casas,Under,2.42,0.27,EV < 4%,NO,,,0.8067,0.3617,2.5,
+b9f00a4d399ec661e733857c9d5fb2dc,soccer_uefa_champs_league,2026-11-24T20:00:00Z,UEFA Champions League,Manchester City vs Napoli,2026-11-24 06:12,16,0.5458,Pinnacle,Over,1.84,0.42,EV < 4%,NO,,,0.9004,0.5458,3.5,
+3fb5e4a792cf34a0459efcb79a11a785,soccer_uefa_champs_league,2026-11-24T20:00:00Z,UEFA Champions League,Real Madrid vs PSV Eindhoven,2026-11-24 06:12,16,0.4891,mediana de 16 casas,Under,1.94,-0.89,EV < 4%,NO,,,0.9443,0.6763,4.5,
+aea973c122c91837c15e066c757c747f,soccer_uefa_champs_league,2026-11-24T20:00:00Z,UEFA Champions League,RB Leipzig vs RC Lens,2026-11-24 06:12,14,0.5428,mediana de 14 casas,Over,1.84,-0.13,EV < 4%,NO,,,0.8992,0.5428,3.5,
+8e93849b4c1ccbf1c207836d5c470150,soccer_uefa_champs_league,2026-11-24T20:00:00Z,UEFA Champions League,ŠK Slovan Bratislava vs Real Betis,2026-11-24 06:12,17,0.4851,Pinnacle,Under,1.97,1.44,EV < 4%,NO,,,0.8744,0.4851,3.5,
+92c74d2f4a4275568feff8072ed15e73,soccer_efl_champ,2026-11-24T19:45:00Z,Championship,Bristol City vs Wrexham AFC,2026-11-24 06:12,17,0.4660,mediana de 17 casas,Over,2.16,0.65,EV < 4%,NO,,,0.7205,0.2506,2.5,
+ae887a08eef3ff58053488dbddde28a3,soccer_efl_champ,2026-11-24T19:45:00Z,Championship,Cardiff City vs Preston North End,2026-11-24 06:12,14,0.4436,mediana de 14 casas,Under,1.79,-0.40,EV < 4%,NO,,,0.8542,0.4436,3.5,
+6d21b6408d1f1c42def270b7f1ae5b21,soccer_efl_champ,2026-11-24T19:45:00Z,Championship,Charlton Athletic vs Lincoln City,2026-11-24 06:12,17,0.4614,mediana de 17 casas,Over,2.18,0.58,EV < 4%,NO,,,0.7168,0.2468,2.5,
+e239a6d57b2cf15091f673c2448fbf4f,soccer_efl_champ,2026-11-24T19:45:00Z,Championship,Middlesbrough vs Swansea City,2026-11-24 06:12,8,0.6317,mediana de 8 casas,Under,2.62,-3.51,EV < 4%,NO,,,0.8360,0.4100,2.5,
+cbb9284b5d072d869a395ba3ffb8bbff,soccer_efl_champ,2026-11-24T19:45:00Z,Championship,Norwich City vs Queens Park Rangers,2026-11-24 06:12,14,0.5824,mediana de 14 casas,Over,1.68,-2.15,EV < 4%,NO,,,0.8046,0.3584,2.5,
+c2ca2ce56eb3bccf1a5de2d0ccc2207f,soccer_efl_champ,2026-11-24T19:45:00Z,Championship,Portsmouth vs West Ham United,2026-11-24 06:12,17,0.5271,Pinnacle,Under,2.08,-1.63,EV < 4%,NO,,,0.7664,0.3048,2.5,
+031162fd89aa3c1fd39e523b3c82d35a,soccer_efl_champ,2026-11-24T19:45:00Z,Championship,Sheffield United vs Southampton,2026-11-24 06:12,16,0.5730,mediana de 16 casas,Over,1.74,-0.29,EV < 4%,NO,,,0.7983,0.3490,2.5,
+018856cb75135463eb1972d978339023,soccer_efl_champ,2026-11-24T20:00:00Z,Championship,Wolverhampton Wanderers vs Derby County,2026-11-24 06:12,11,0.6163,mediana de 11 casas,Over,1.62,-0.16,EV < 4%,NO,,,0.8264,0.3934,2.5,
