@@ -85,7 +85,7 @@ MAX_SOBRE_MEDIANA = 1.12    # cuota que supera 12% a la mediana = probable error
 MAX_EDAD_CUOTA_MIN = 180    # cuotas cuyo last_update es más viejo que esto se ignoran (None = no filtrar)
 CUOTA_MIN = 1.50              # cuota mínima en la línea 2.5
 CUOTA_MIN_OTRAS_LINEAS = 1.20   # en 1.5 / 3.5 las cuotas son más bajas por naturaleza
-EV_MIN = 0.04
+EV_MIN = 0.02               # el backtest muestra CLV positivo (+3.7%) desde EV 2%; ver backtest_goles.py
 EV_MAX = 0.12               # un EV mayor casi siempre es error de datos, no una oportunidad
 KELLY_FRACCION = 0.25
 STAKE_MIN = 0.25            # % de banca
