@@ -81,6 +81,9 @@ CASA_REFERENCIA = "pinnacle"
 LINEA = 2.5                 # línea de referencia (desempate y valor por defecto)
 LINEAS_VALIDAS = (1.5, 2.5, 3.5, 4.5)   # líneas .5 (sin devolución de apuesta)
 VENTANA_HORAS = 24
+# Los exchanges cobran un % sobre la ganancia: su cuota se descuenta antes de calcular el valor.
+# 2% es un supuesto; ajusta cada una a lo que cobre la plataforma.
+COMISION_EXCHANGE = {"matchbook": 0.02, "betfair_ex_eu": 0.02, "betfair_ex_uk": 0.02, "smarkets": 0.02}
 REANALISIS_HORAS = 12       # no se vuelve a consultar un partido analizado hace menos de estas horas (ahorra créditos)
 
 MIN_CASAS = 5               # mínimo de casas en UNA misma línea para confiar en la prob. justa
@@ -376,8 +379,12 @@ def extraer_totales(evento, ahora=None):
                 except (TypeError, ValueError):
                     continue
                 if over > 1.0 and under > 1.0:
+                    com = COMISION_EXCHANGE.get(b["key"], 0.0)
+                    # "over"/"under" (brutas) sirven para la probabilidad; las "_neta" son lo que se cobra.
                     out.setdefault(pt, {})[b["key"]] = {
-                        "titulo": b.get("title", b["key"]), "over": over, "under": under}
+                        "titulo": b.get("title", b["key"]), "over": over, "under": under,
+                        "over_neta": 1.0 + (over - 1.0) * (1.0 - com),
+                        "under_neta": 1.0 + (under - 1.0) * (1.0 - com), "comision": com}
     return out
 
 
@@ -445,7 +452,7 @@ def evaluar_evento(evento, ahora=None):
     candidatos, mejor_descartado = [], None
     for lado, prob in (("Over", p_over), ("Under", 1.0 - p_over)):
         k = lado.lower()
-        precios = [(v[k], c) for c, v in casas.items()]
+        precios = [(v[f"{k}_neta"], c) for c, v in casas.items()]
         mejor, casa_key = max(precios)
         mediana = statistics.median(p for p, _ in precios)
         ev = prob * mejor - 1.0
@@ -456,6 +463,7 @@ def evaluar_evento(evento, ahora=None):
                 "mercado": f"Goles - {lado} {linea}", "lado": lado, "linea": linea, "prob": prob,
                 "cuota": mejor, "cuota_justa": 1.0 / prob, "ev": ev * 100.0, "stake": stake,
                 "casa": casas[casa_key]["titulo"], "referencia": ref, "n_casas": len(casas),
+                "comision": casas[casa_key]["comision"], "cuota_bruta": casas[casa_key][k],
             })
         elif mejor_descartado is None or ev > mejor_descartado[1]:
             mejor_descartado = (lado, ev, mejor, motivo)
@@ -844,12 +852,15 @@ def _analizados_recientes(ahora):
 
 
 def _mensaje_pick(ev, sport, partido, inicio, pick):
+    nota = (f"💸 Cuota ya neta: {pick['cuota_bruta']:.2f} menos {pick['comision'] * 100:.0f}% de comisión\n"
+            if pick["comision"] else "")
     return (
         f"⚡ <b>PICK GOLES</b>\n\n"
         f"🏆 {html.escape(ev.get('sport_title', sport))}\n"
         f"🏟️ {html.escape(partido)}\n"
         f"🕒 {inicio.astimezone(ZONA):%d/%m %H:%M} (hora Colombia)\n"
         f"📌 <b>{pick['mercado']}</b> @ <b>{pick['cuota']:.2f}</b> ({html.escape(pick['casa'])})\n"
+        f"{nota}"
         f"📊 Prob. justa: {pick['prob'] * 100:.1f}% (cuota justa {pick['cuota_justa']:.2f}) "
         f"| EV: +{pick['ev']:.1f}%\n"
         f"🧮 Referencia: {pick['referencia']}\n"
